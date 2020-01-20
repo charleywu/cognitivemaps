@@ -1,0 +1,1010 @@
+---
+title: "Modelling Results"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+bibliography: references.bib
+---
+
+Now let's model the data.
+
+```{r message=FALSE}
+#house keeping
+rm(list=ls())
+
+#load packages
+packages <- c("coin", 'ggbeeswarm', 'pander', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'gridExtra', 'reshape2', 'stargazer', 'coefplot', "grid", 'corrplot', 'ggsignif')
+invisible(lapply(packages, require, character.only = TRUE))
+theme_set(theme_cowplot(font_size=12))
+
+source("dataProcessing.R") #For importing participant data
+source('statisticalTests.R') #For running statistical tests
+#colors
+bmtCol <- "#F0E442"
+gpCol <- "#D55E00"
+shepardCol <- "#7570b3"
+#Participant data
+data<-dataImport(normalize = F)
+uids <- unique(data$id)
+```
+# Model Cross-Validation
+
+Model fitting is done in `modelComparisonCV.R`, which uses cross-validation to estimate model parameters and then makes out of sample predictions on the held-out test set. I use cluster computing to run a separate for each model x participant combination. The results are then saved in `modelResults/$batchName/` and we can load them up here. For simplicity, we can just load up the dataframe of these results (which have previously been produced in `modelplots.R`).
+
+```{r}
+modelFit <- read.csv('modelResults/modelFit.csv')
+paramEstimates <- read.csv('modelResults/paramEstimates.csv') 
+
+modelFit <- subset(modelFit, kernel %in%  c('RBF', 'BMT')) #models to include
+modelFit$kernel <- factor(modelFit$kernel, levels=c('RBF', 'BMT')) #reorder levels
+levels(modelFit$kernel) <- c('GP', 'BMT') #rename levels
+```
+# Model Comparison
+
+Now let's how well the models were able to predict participant behavior. We can compute the predictive accuracy of each model using a pseudo-$R^2$ measure by comparing the predictions of a given model ($M_k$) to random chance ($M_{rand}$):
+$$  R^2 = 1 - \frac{\log\mathcal{L}(M_k)}{\log\mathcal{L}(M_{rand})}$$
+
+Intuitively, $R^2=0$ is equivalent to random chance, while $R^2=1$ is a theoreticallly perfect model.
+
+
+```{r}
+
+contextLabels <- c("Conceptual"="Conceptual Task", "Spatial"="Spatial Task")
+p1 <- ggplot(modelFit, aes(x = interaction(kernel, context), y = R2, color = kernel))+
+  geom_line(aes(group=interaction(participant, context)), color = 'black', alpha = 0.1)+
+  geom_boxplot(outlier.shape=NA, width = .2, fill = NA, color = 'black')+
+  geom_quasirandom(alpha = 0.7)+
+  #stat_summary(fun.y = mean, geom='bar')+
+  #stat_summary(fun.data = mean_se, geom='errorbar')+
+  stat_summary(fun.y=mean, geom='point', color = 'black', shape = 5, size = 2)+
+  #stat_summary(fun.data=mean_cl_boot, geom='errorbar', width = .2, color = 'black')+
+  #facet_grid(~context, labeller=as_labeller(contextLabels)) +
+  #theme_classic()+
+  ylab(expression(paste("Predictive Accuracy (",R^{2},')')))+
+  xlab('')+
+  annotate('text', x = 1.5, y = 1.1, label='Conceptual Task')+
+  annotate('text', x = 3.5, y = 1.1, label='Spatial Task')+
+  scale_x_discrete(labels=c("GP", "BMT", "GP", "BMT"))+
+  geom_signif(y_position = c(.95, .95),  xmin = c(1,3), xmax = c(2,4), annotation = c("BF=126","BF=470"), color = 'black')+
+  #scale_color_manual(values = c(gpCol,"#a6761d", bmtCol), name='')+
+  scale_color_manual(values = c(gpCol, bmtCol), name='')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+p1      
+```
+
+While the differences are not massive in terms of predeictive accuracy, they are consistent and meaningfully different. The GP beats the BMT in both the conceptual task ($t(128)=3.9$, $p<.001$, $d=0.06$, $BF=126$) and the spatial task (`$t(128)=4.3$, $p<.001$, $d=0.1$, $BF=470$`)
+
+```{r eval=FALSE}
+#Statistical tests
+ttestPretty(subset(modelFit, context =='Conceptual' & ModelName == 'RBF-UCB')$R2, subset(modelFit, context =='Conceptual' & ModelName == 'BMT-UCB')$R2, paired = T, maxBF = Inf)
+ttestPretty(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$R2, subset(modelFit, context =='Spatial' & ModelName == 'BMT-UCB')$R2, paired = T, maxBF= Inf)
+```
+
+## Hierarchical Bayessian model comparison
+
+We can also do a hierarchical Bayesian model comparison, where we compute the posterior probability (corrected for chance) of a given model being better than the other model [@stephan2009bayesian; @rigoux2014bayesian]. This is known as the _Protected Exceedence Probability_ ($pxp$). Let's first save the negative log likelihoods (`nLL`) from each model. These are the summed out-of-sample prediction errors for each model x participant combination, defined in terms of log loss.
+
+```{r}
+write.table(cbind(subset(modelFit, context =='Conceptual' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Conceptual' & ModelName == 'BMT-UCB')$nLL), 'modelResults/conceptualdiffevidence.csv', row.names = FALSE, sep=',', col.names=FALSE)
+write.table(cbind(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Spatial' & ModelName == 'BMT-UCB')$nLL), 'modelResults/spatialdiffevidence.csv', row.names = FALSE, sep=',',col.names=FALSE)
+```
+Now we run this using Matlab code written by Sam Gershman: https://github.com/sjgershm/mfit/blob/master/bms.m. In this repository, the file I run is `pxp.m`
+
+We now read in the output of this model comparison.
+
+```{r}
+conceptualPXP <- as.numeric(read.csv('modelResults/conceptualPXP.csv', header=F))
+spatialPXP <- as.numeric(read.csv('modelResults/spatialPXP.csv', header=F))
+#build dataframe with output
+pxpDF <- data.frame(model= rep(c('GP', 'BMT'),2), context = c('Conceptual', 'Conceptual', 'Spatial','Spatial' ), pxp= c(conceptualPXP,spatialPXP ))
+#Reorder levels
+pxpDF$model <- factor(pxpDF$model , levels=c('GP', 'BMT'))
+
+p2 <- ggplot(pxpDF, aes(x = model, y = pxp, fill = model))+
+  geom_bar(stat="identity",color='black')+
+  facet_grid(~context,labeller=as_labeller(contextLabels))+
+  ylab('pxp')+
+  xlab('')+
+  scale_y_continuous(labels = percent)+
+  expand_limits(y=0)+
+  #scale_fill_manual(values = c(gpCol,"#a6761d", bmtCol), name='')+
+  scale_fill_manual(values = c(gpCol,bmtCol), name='')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+p2
+```
+This suggests our GP model is extremely likely to be the better model for our participant pool.
+
+## Number of participants best fit
+
+We are also interested in the number of participants best fit by each model
+
+|            	| GP 	| BMT 	| Ties 	|
+|------------	|----	|-----	|------	|
+| Conceptual 	| `r sum(subset(modelFit, context =='Conceptual' & kernel == 'GP')$nLL < subset(modelFit, context =='Conceptual' & kernel == 'BMT')$nLL)`|  `r sum(subset(modelFit, context =='Conceptual' & kernel == 'GP')$nLL > subset(modelFit, context =='Conceptual' & kernel == 'BMT')$nLL)`|  `r sum(subset(modelFit, context =='Conceptual' & kernel == 'GP')$nLL == subset(modelFit, context =='Conceptual' & kernel == 'BMT')$nLL)`    	|
+| Spatial    	|`r sum(subset(modelFit, context =='Spatial' & kernel == 'GP')$nLL < subset(modelFit, context =='Spatial' & kernel == 'BMT')$nLL)`|`r sum(subset(modelFit, context =='Spatial' & kernel == 'GP')$nLL> subset(modelFit, context =='Spatial' & kernel == 'BMT')$nLL)`| `r sum(subset(modelFit, context =='Spatial' & kernel == 'GP')$nLL == subset(modelFit, context =='Spatial' & kernel == 'BMT')$nLL)`     	|
+
+
+### Which participants were easier to predict?
+
+It seems like both models were better at predicting participants who performed better
+```{r}
+
+pAccuracyR2 <- ggplot(modelFit, aes(x = meanScore, y = R2, color = kernel ))+
+  geom_point(alpha= 0.9)+
+  facet_grid(context~kernel)+
+  theme_classic() +
+  xlab('Mean Bandit Score')+
+  ylab('Predictive Accuracy')+
+  scale_color_manual(values = c(gpCol,bmtCol), name='')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+pAccuracyR2
+```
+
+The best performing participants were also the most diagnostic between models. There is also a very slight upwards slope (better performing participant were more strongly predicted GPs), but this almost certainly overlaps with the `y=0` line (dashed line) so I won't even test it. Rather, the takeaway here as that better performing participants are more diagnostic, but not substantially skewed towards either model. So our current hypothesis that the GP is the better model still stands.
+
+```{r}
+modelDiff <- ddply(modelFit, ~participant+context+meanScore, plyr::summarise, diff = diff(nLL))
+
+pModelDiff <- ggplot(modelDiff, aes(x = meanScore, y = diff, color = context, fill = context ))+
+  geom_point(alpha = .9)+
+  geom_hline(yintercept = 0, color ='black', linetype = 'dashed')+
+  geom_smooth(method='lm', alpha = 0.2)+
+  facet_grid(~context)+
+  theme_classic() +
+  xlab('Mean Bandit Score')+
+  ylab(expression(nLL[BMT] - nLL[GP]))+
+  scale_fill_brewer(palette = "Dark2", name = "") +
+  scale_color_brewer(palette = "Dark2", name = "") +
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+pModelDiff
+```
+
+Participants who had longer search trajectories (more steps) seem to be better fit by the GP. This trend also seems to be quite weak, so I won't bother trying to test it. But again, this doesn't seem to suggest we should revisit our hypothesis
+
+```{r}
+
+movementDF <- ddply(data, ~id+context, plyr::summarize, averageSteps = mean(steps, na.rm=T)) #compute average distance
+modelDiff$averageSteps <- movementDF$averageSteps #add to model Diff
+
+ggplot(modelDiff, aes(x = averageSteps, y = diff, color = context, fill = context ))+
+  geom_point()+
+  geom_hline(yintercept = 0, color ='black', linetype = 'dashed')+
+  geom_smooth(method='lm', alpha = 0.2)+
+  facet_grid(~context)+
+  theme_classic() +
+  xlab('Average Trajectory Length (steps)')+
+  ylab(expression(nLL[BMT] - nLL[GP]))+
+  scale_fill_brewer(palette = "Dark2", name = "") +
+  scale_color_brewer(palette = "Dark2", name = "") +
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+```
+
+Is there anything going on with the task order effect and our model results? It looks like we get much better model fits for participants in part 2 than in part 1.
+
+```{r}
+modelFit$part <- ifelse((modelFit$contextOrder=="Spatial First" & modelFit$context == "Spatial") |(modelFit$contextOrder=="Conceptual First" & modelFit$context == "Conceptual"), 'Task One', 'Task Two' ) 
+
+taskOrderP <- ggplot(modelFit, aes(x = part, y = R2, fill = kernel ))+
+  stat_summary(fun.y=mean, geom='bar', position = position_dodge(width = 1), color='black')+
+  stat_summary(fun.data = mean_cl_boot, geom='errorbar', color='black', position = position_dodge(width = 1), width = .2)+
+  theme_classic() +
+  xlab('')+
+  coord_cartesian(ylim=c(0, .55))+
+  ylab('Predictive Accuracy')+
+  scale_fill_manual(values = c(gpCol,bmtCol), name='')+
+  geom_signif(y_position = c(.4, .5),  xmin = c(.8,1.8), xmax = c(1.2,2.2), annotation = c("BF=1685","BF=27"), color = 'black')+
+  theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
+taskOrderP 
+
+ ggplot(modelFit, aes(x = context, y = R2, color = context ))+
+  geom_boxplot(outlier.shape=NA, width = .2, fill = NA, color = 'black')+
+  geom_quasirandom(alpha = 0.7)+
+  stat_summary(fun.y=mean, geom='point', color = 'black', shape = 5, size = 2)+
+  facet_grid(kernel~contextOrder)+
+  theme_classic() +
+  xlab('Mean Bandit Score')+
+  ylab('Predictive Accuracy')+
+  scale_color_brewer(palette = "Dark2", name = "") +
+  scale_fill_brewer(palette = "Dark2", name = "") +
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+```
+
+The superiority of the GP holds, even when we compare only task one ($t(128)=4.6$, $p<.001$, $d=0.10$, $BF=1685$) or only task two ($t(128)=3.5$, $p<.001$, $d=0.08$, $BF=27$)
+```{r}
+ttestPretty(subset(modelFit, part == 'Task One' & kernel == 'GP')$R2, subset(modelFit, part == 'Task One' & kernel == 'BMT')$R2, var.equal = T, paired = T, maxBF = Inf)
+ttestPretty(subset(modelFit, part == 'Task Two' & kernel == 'GP')$R2, subset(modelFit, part == 'Task Two' & kernel == 'BMT')$R2, var.equal = T, paired = T, maxBF = Inf)
+```
+
+
+# Learning Curves
+Now let's simulate data based on our model estimates and see if they resemble human performance. Model simulations are performed in `modelSimulations.R` and can be run over night using multiple threads on a relatively powerful laptop.
+
+```{r}
+# # Load all models
+randomDF <- read.csv("rationalModels/random.csv")
+bmtDF <- read.csv("rationalModels/BMTUCB.csv")
+gpDF <- read.csv("rationalModels/GPUCB.csv")
+
+
+#Join all DFs together 
+rationalDF <- rbind(randomDF, bmtDF, gpDF)
+rationalDF$Environment <- factor(rationalDF$Environment, levels=c("Rough", "Smooth"))
+rationalDF <- rationalDF[ , !(names(rationalDF) %in% c("X"))]
+
+dplot<-ddply(data,~trial+environment+context,summarise,meanReward=mean(z), meanSE=se(z))
+colnames(dplot)[2]<-"Environment" #rename colname
+colnames(dplot)[3] <- "Context"
+dplot$Model <- rep("Human", nrow(dplot))
+#Join human with rational models
+rationalDF <- rbind(rationalDF, dplot)
+
+
+#reorder factor levels
+rationalDF$Model <- factor(rationalDF$Model, levels = c("Random",  "GP-UCB", "BMT-UCB" , "Human"))
+levels(rationalDF$Model) <- c("Random",  "GP",  "BMT" , "Human")
+
+trial5DF <- subset(rationalDF, trial %in% c(5,10,15,20))
+#Plot of mean Reward
+taskEnvLabels <- c("Conceptual"="Conceptual Task", "Spatial"="Spatial Task", "Rough"="Rough", "Smooth"= "Smooth")
+p3<- ggplot(rationalDF, aes(x=trial, y=meanReward, col=Model, shape=Model))+
+  stat_summary(fun.y = mean, geom='line', size = 0.8)+
+  stat_summary(fun.y = mean, data = trial5DF, geom='point', size = 2)+
+  #stat_summary(fun.y=mean, geom='point', size = 2)+
+  #geom_point(size=2) +
+  #geom_line(size=.8) +
+  #geom_errorbar(aes(ymin=meanReward-meanSE, ymax=meanReward+meanSE), width=0.1, size=1) +
+  ylab("Average Reward")+xlab("Trial")+
+  theme_classic()+
+  facet_grid(Environment~ Context, labeller=as_labeller(taskEnvLabels)) +
+  scale_shape_manual(values = c(32, 16,17,15,4,7)) +
+  #scale_color_manual(values=c("black",bmtCol, "#1B9E77", "#fb9a99"))+
+  scale_color_manual(values=c("black",gpCol, bmtCol,"#fb9a99"))+
+  #scale_linetype_manual(values = c('solid', 'dotted', 'solid', 'dotted', 'solid', 'solid'))+
+  #scale_color_brewer(palette="Paired", direction=1)+
+  #coord_cartesian(ylim=c(45,85))+
+  scale_x_continuous(breaks = round(seq(0,20, by = 5),1))+
+  theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
+p3
+```
+
+Can we quantify the difference between aggregate mean rewards? How about in terms of Mean Squared Error?
+
+```{r}
+human <- ddply(data,~trial+context,summarise,meanReward=mean(z), meanSE=se(z))
+#MSE between GP and Humans
+mean((subset(human, context == 'Spatial')$meanReward - ddply(subset(rationalDF, Model == 'GP' & Context == 'Spatial'), ~trial, plyr::summarize, meanReward = mean(meanReward))$meanReward)^2) #MSE between GP and Humans
+mean((subset(human, context == 'Conceptual')$meanReward - ddply(subset(rationalDF, Model == 'GP' & Context == 'Conceptual'), ~trial, plyr::summarize, meanReward = mean(meanReward))$meanReward)^2) #MSE between GP and Humans
+
+mean((subset(human, context == 'Spatial')$meanReward - ddply(subset(rationalDF, Model == 'BMT' & Context == 'Spatial'), ~trial, plyr::summarize, meanReward = mean(meanReward))$meanReward)^2) #MSE between GP and Humans
+mean((subset(human, context == 'Conceptual')$meanReward - ddply(subset(rationalDF, Model == 'BMT' & Context == 'Conceptual'), ~trial, plyr::summarize, meanReward = mean(meanReward))$meanReward)^2) #MSE between GP and 
+
+
+```
+
+
+# Model Parameters
+
+Now let's take a look at the model parameters and see what they tell us about how participants search across domains
+
+## Gaussian Process
+
+```{r fig.height = 5, fig.width = 12}
+#Compile the plotting dataframes
+k<- 'RBF'
+a<- "UCB"
+conceptualDF<- subset(paramEstimates, kernel==k & acq==a & context=="Conceptual")
+conceptualParams <- ddply(conceptualDF, ~participant+environment+contextOrder, plyr::summarize, Conceptuallambda=mean(lambda), Conceptualbeta = mean(beta), Conceptualtau = mean(tau))
+
+gridDF<- subset(paramEstimates, kernel==k & acq==a & context == "Spatial")
+gridParams <- ddply(gridDF, ~participant+environment+contextOrder, plyr::summarize, Spatiallambda=mean(lambda), Spatialbeta = mean(beta), Spatialtau = mean(tau))
+
+corDF <- merge(conceptualParams, gridParams, by=c("participant", "environment", "contextOrder"))
+corDF$environment <- factor(corDF$environment, levels=c("Rough", "Smooth"))
+
+#LAMBDA 
+#Max axis value using Tukey's outlier removal critereon (for the larger of the two axes)
+uppertquartiles <- c(quantile(corDF$Conceptuallambda, probs=c(.25, .75))[2], quantile(corDF$Spatiallambda, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(corDF$Conceptuallambda, na.rm = T), 1.5 * IQR(corDF$Spatiallambda, na.rm = T))
+upperLimitLambda <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p4a <- ggplot(subset(corDF,Conceptuallambda <= upperLimitLambda &  Spatiallambda<= upperLimitLambda), aes(Conceptuallambda, Spatiallambda)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment
+  expand_limits(x = 0, y = 0) +
+  xlab(expression("Conceptual "*lambda))+
+  ylab(expression("Spatial "*lambda)) +
+  scale_x_continuous(limits=c(0,upperLimitLambda)) +
+  scale_y_continuous(limits=c(0,upperLimitLambda)) +
+  theme_classic()+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  ggtitle('Generalization')+
+  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  theme(title = element_text(family = 'sans'), legend.position='none', 
+        legend.background = element_rect(fill='transparent'))
+p4a <- ggExtra::ggMarginal(p4a, type = "boxplot", fill='transparent', size = 10, outlier.shape = NA) #add marginal boxplots
+
+#BETA
+#Upper limits
+uppertquartiles <- c(quantile(corDF$Conceptualbeta, probs=c(.25, .75))[2], quantile(corDF$Spatialbeta, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(corDF$Conceptualbeta, na.rm = T), 1.5 * IQR(corDF$Spatialbeta, na.rm = T))
+upperLimitBeta <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p4b <- ggplot(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta), aes(Conceptualbeta, Spatialbeta)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  expand_limits(x = 0, y = 0) +
+  scale_x_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  scale_y_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  xlab(expression("Conceptual "*beta))+
+  ylab(expression("Spatial "*beta)) +
+  theme_classic()+
+  ggtitle('Exploration Bonus')+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  theme(title = element_text(family = 'sans'), legend.position="None")
+p4b <- ggExtra::ggMarginal(p4b, type = "boxplot", fill='transparent', size=10)
+
+
+#TAU
+#Upper limits
+uppertquartiles <- c(quantile(corDF$Conceptualtau, probs=c(.25, .75))[2], quantile(corDF$Spatialtau, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(corDF$Conceptualtau, na.rm = T), 1.5 * IQR(corDF$Spatialtau, na.rm = T))
+upperLimitTau <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p4c <- ggplot(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau), aes(Conceptualtau, Spatialtau)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  xlab(expression("Conceptual "*tau))+
+  scale_x_continuous(limits=c(0,upperLimitTau)) +
+  scale_y_continuous(limits=c(0,upperLimitTau)) +
+  ylab(expression("Spatial "*tau)) +
+  theme_classic()+
+  ggtitle('Temperature')+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='right')
+leg <- get_legend(p4c) #extract legend
+p4c <- p4c + theme(legend.position = 'none')
+p4c<- ggExtra::ggMarginal(p4c, type = "boxplot", fill='transparent', size=10)
+
+
+GPparameterPlots <- cowplot::plot_grid(p4a, p4b, p4c,leg, nrow = 1, rel_widths = c(1,1,1,.5))
+GPparameterPlots
+```
+
+Note that these plots use Tukey's outlier removal criterion to set the x and y axis limits (based on the larger of the two upper limits). This avoids some extreme values making it difficult to interpret the results.  The dashed line represents `y=x`. Highly correlated parameters should be close to this line, while strong differences between tasks correspond to points either above or below the line.
+
+I first report the results using non-parametric tests, comparing differences in parameter estimates using the Wilcoxon signed-rank test and correlations using Kendall's $\tau$. In addition, I have also applied Tukey's outlier removal criterion to the data and run standard $t$-tests and Pearson's correlation. We should expect robust effects to be found in both analyses
+
+### Generalization $\lambda$
+There is some ambiguity about whether lambda values differ (Wilcoxon signed-rank test: $Z=-1.2$, $p=.115$, $r=-.11$, $BF=.14$; but with outliers removed: $t(104)=-3.8$, $p<.001$, $d=0.4$, $BF=75$) and with correlated estimates  (`$r_{\tau}=.13$, $p=.028$, $BF=1.3$; without outliers: $r=.30$, $p=.002$, $BF=22$).
+
+### Exploration bonus $\beta$
+We find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.0$, $p<.001$, $r=-.44$, $BF>100$; without outliers: $t(116)=-6.6$, $p<.001$, $d=0.8$, $BF>100$). These estimates are somewhat correlated between the two tasks ($r_{\tau}=.18$, $p=.002$, $BF=13$; without outliers: $r=.15$, $p=.109$, $BF=.73$).
+
+### Temperature $\tau$
+In contrast to the reduction of exploration in the conceptual task, we find an increase in random exploration ($Z=6.9$, $p<.001$, $r=-.61$, $BF>100$; without outliers: $t(105)=6.9$, $p<.001$, $d=0.8$, $BF>100$). Temperature estimates were strongly rank correlated ($r_{\tau}=.43$, $p<.001$, $BF>100$; without outliers $r=.30$, $p=.002$, $BF=23$).
+
+
+#### Full data
+
+|                           	| Rank-test 	| Rank Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Generalization $\lambda$  	|$Z=-1.2$, $p=.115$, $r=-.11$, $BF=.14$|$r_{\tau}=.13$, $p=.028$, $BF=1.3$|
+| Exploration Bonus $\beta$ 	|$Z=-5.0$, $p<.001$, $r=-.44$, $BF>100$|$r_{\tau}=.18$, $p=.002$, $BF=13$|
+| Temperature $\tau$        	|$Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$|$r_{\tau}=.43$, $p<.001$, $BF>100$|
+
+
+#### Outliers Removed
+
+|                           	| $t$-test 	| Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Generalization $\lambda$  	|$t(104)=-3.8$, $p<.001$, $d=0.4$, $BF=75$|$r=.30$, $p=.002$, $BF=22$|
+| Exploration Bonus $\beta$ 	|$t(116)=-6.6$, $p<.001$, $d=0.8$, $BF>100$|$r=.15$, $p=.109$, $BF=.73$|
+| Temperature $\tau$        	|$t(105)=6.9$, $p<.001$, $d=0.8$, $BF>100$|$r=.30$, $p=.002$, $BF=23$|
+
+
+
+Here is all the code for these statistical tests below
+
+```{r eval = FALSE}
+#Lambda 
+#Full data
+ranktestPretty(corDF$Conceptuallambda,corDF$Spatiallambda, paired=T)  #rank test
+corTestPretty(corDF$Conceptuallambda,corDF$Spatiallambda, method ='kendall') #correlation
+#Outliers removed
+ttestPretty(subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda,  paired=T) 
+corTestPretty(subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda)
+
+#Beta
+#Full Data
+ranktestPretty(corDF$Conceptualbeta,corDF$Spatialbeta, paired=T) #Note, sometimes the gibbs sampler doesn't converge for the Bayes Factor
+corTestPretty(corDF$Conceptualbeta,corDF$Spatialbeta, method='kendall')
+#Outliers removed
+ttestPretty(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
+corTestPretty(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
+
+#Tau
+#Full data
+ranktestPretty(corDF$Conceptualtau,corDF$Spatialtau, paired=T) #full data
+corTestPretty(corDF$Conceptualtau,corDF$Spatialtau, method='kendall')
+#outliers removed
+ttestPretty(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
+corTestPretty(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
+```
+
+Were there also differences in parameters between environments? There were no reliable differences for $\lambda$ (conceptual: $U=1864$, $p=.343$, $r_{\tau}=-.07$, $BF=.32$; spatial: $U=2533$, $p=.027$, $r_{\tau}=.16$, $BF=.63$)). There seems to be larger conceptual $\beta$ values in smooth than rough environments ($U=2710$, $p=.002$, $r_{\tau}=.22$, $BF=8.2$), but no differences in spatial $\beta$ ($U=2379$, $p=.138$, $r_{\tau}=.11$, $BF=.58$). There were no differences in $\tau$ (conceptual: $U=1729$, $p=.113$, $r_{\tau}=-.12$, $BF=.50$); spatial: $U=1968$, $p=.648$, $r_{\tau}=-.03$, $BF=.23$).
+
+```{r eval = FALSE}
+#Lambda
+ranktestPretty(subset(corDF, environment=="Smooth")$Conceptuallambda,subset(corDF, environment=="Rough")$Conceptuallambda) #$U=1864$,
+\$p=.343$, $r_{\tau}=-.07$, $BF=.32$
+ranktestPretty(subset(corDF, environment=="Smooth")$Spatiallambda,subset(corDF, environment=="Rough")$Spatiallambda) #$U=2533$, $p=.027$, $r_{\tau}=.16$, $BF=.63$
+#Beta
+ranktestPretty(subset(corDF, environment=="Smooth")$Conceptualbeta,subset(corDF, environment=="Rough")$Conceptualbeta) #$U=2710$, $p=.002$, $r_{\tau}=.22$, $BF=8.2$
+ranktestPretty(subset(corDF, environment=="Smooth")$Spatialbeta,subset(corDF, environment=="Rough")$Spatialbeta)#$U=2379$, $p=.138$, $r_{\tau}=.11$, $BF=.58$
+#Tau
+ranktestPretty(subset(corDF, environment=="Smooth")$Conceptualtau,subset(corDF, environment=="Rough")$Conceptualtau) #$U=1729$, $p=.113$, $r_{\tau}=-.12$, $BF=.50$
+ranktestPretty(subset(corDF, environment=="Smooth")$Spatialtau,subset(corDF, environment=="Rough")$Spatialtau)
+```
+
+One more thing I want to check is whether $\tau$ and $\beta$ are inversely correlated
+
+```{r}
+upperLimit <- max(upperLimitTau, upperLimitBeta) #Use the larger of the two upper limits
+
+explorationConceptual <- ggplot(subset(corDF, Conceptualbeta<=upperLimit & Conceptualtau<=upperLimit), aes(Conceptualbeta, Conceptualtau)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  xlab(expression("Exploration bonus "*beta))+
+  scale_x_continuous(limits=c(0,upperLimit)) +
+  scale_y_continuous(limits=c(0,upperLimit)) +
+  ylab(expression("Temperature "*tau)) +
+  theme_classic()+
+  ggtitle('Conceptual')+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='none')
+explorationConceptual
+
+explorationSpatial <- ggplot(subset(corDF, Spatialbeta<=upperLimit & Spatialtau<=upperLimit), aes(Spatialbeta, Spatialtau)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  xlab(expression("Exploration bonus "*beta))+
+  scale_x_continuous(limits=c(0,upperLimit)) +
+  scale_y_continuous(limits=c(0,upperLimit)) +
+  ylab(expression("Temperature "*tau)) +
+  theme_classic()+
+  ggtitle('Spatial')+
+  scale_color_manual(name="Environment", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="Environment", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='right')
+explorationSpatial
+
+```
+
+### Relationships between parameters and performance
+
+Higher lambda estimates were weakly correlated with better performance in the spatial task ($r_{\tau}=.13$, $p=.030$, $BF=1.2$; outliers removed: $r=-.05$, $p=.600$, $BF=.25$), yet surprisingly lower performance in the conceptual task ($r_{\tau}=-.22$, $p<.001$, $BF>100$; outliers removed: $r=.23$, $p=.012$, $BF=4.3$).
+
+```{r}
+gpDF <- ddply(subset(paramEstimates, kernel=='RBF') , ~participant+environment+context+meanScore, plyr::summarize, lambda = mean(lambda), beta = mean(beta), tau = mean(tau))
+
+pLambda <- ggplot(gpDF, aes(x= meanScore, y = lambda, color=context))+
+  geom_point(alpha = .9)+
+  geom_smooth(method = 'lm')+
+  facet_grid(context~.)+
+  scale_y_continuous(limits=c(0,upperLimitLambda)) +
+  ylab(expression(lambda)) +
+  xlab('Average Reward')+
+  ggtitle('Generalization')+
+  theme_classic()+
+  scale_color_brewer(palette = 'Dark2')+
+  theme(strip.background=element_blank(), legend.position='none')
+pLambda 
+#tests
+# corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$lambda, method = 'kendall') #rank
+# corTestPretty(subset(gpDF, context == 'Conceptual' & lambda <= upperLimitLambda)$meanScore, subset(gpDF, context == 'Conceptual' & lambda <= upperLimitLambda)$lambda) #outiers removed
+# #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$lambda,  method = 'kendall')
+# corTestPretty(subset(gpDF, context == 'Spatial' & lambda <= upperLimitLambda)$meanScore, subset(gpDF, context == 'Spatial' & lambda <= upperLimitLambda)$lambda)
+# ttestPretty(subset(gpDF, context=='Conceptual' & environment=='Smooth' & lambda <= upperLimitLambda)$lambda, mu=4, maxBF=Inf)
+# ttestPretty(subset(gpDF, context=='Spatial' & environment=='Smooth')$lambda, mu=4,maxBF=Inf)
+# ttestPretty(subset(gpDF, context=='Conceptual' & environment=='Rough' & lambda <= upperLimitLambda)$lambda, mu=2, maxBF=Inf)
+# ttestPretty(subset(gpDF, context=='Spatial' & environment=='Rough')$lambda, mu=2,maxBF=Inf)
+```
+
+Higher beta estimates were strongly predictive of better performance in both conceptual ($r_{\tau}=.32$, $p<.001$, $BF>100$; outliers removed: $r=.43$, $p<.001$, $BF>100$) anbd spatial tasks ($r_{\tau}=.31$, $p<.001$, $BF>100$; outliers removed: $r=.48$, $p<.001$, $BF>100$)
+```{r}
+pBeta<- ggplot(gpDF, aes(x= meanScore, y = beta, color=context))+
+  geom_point(alpha = .9)+
+  geom_smooth(method = 'lm')+
+  facet_grid(context~.)+
+  scale_y_continuous(limits=c(0,upperLimitBeta)) +
+  ylab(expression(beta)) +
+  xlab('Average Reward')+
+  ggtitle('Exploration Bonus')+
+  theme_classic()+
+  scale_color_brewer(palette = 'Dark2')+
+  theme(strip.background=element_blank(), legend.position='none')
+pBeta 
+  
+#corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$beta, method = 'kendall')
+# corTestPretty(subset(gpDF, context == 'Conceptual' & beta <= upperLimitBeta)$meanScore, subset(gpDF, context == 'Conceptual' & beta <= upperLimitBeta)$beta) #outiers removed
+# #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$beta,  method = 'kendall')
+# corTestPretty(subset(gpDF, context == 'Spatial' & beta <= upperLimitBeta)$meanScore, subset(gpDF, context == 'Spatial' & beta <= upperLimitBeta)$beta) #outiers removed
+```
+On the otherhand, high Tau values predicted lower performance in both conceptual($r_{\tau}=-.59$, $p<.001$, $BF>100$; outliers removed: $r=-.68$, $p<.001$, $BF>100$) and spatial tasks ($r_{\tau}=-.58$, $p<.001$, $BF>100$; outliers removed: $r=-.78$, $p<.001$, $BF>100$).
+```{r}
+pTau <- ggplot(gpDF, aes(x= meanScore, y = tau, color=context))+
+  geom_point(alpha = .9)+
+  geom_smooth(method = 'lm')+
+  facet_grid(context~.)+
+  scale_y_continuous(limits=c(0,upperLimitTau)) +
+  ylab(expression(tau)) +
+  xlab('Average Reward')+
+  ggtitle('Temperature')+
+  theme_classic()+
+  scale_color_brewer(palette = 'Dark2')+
+  theme(strip.background=element_blank(), legend.position='none')
+pTau 
+# #corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$tau, method = 'kendall')
+# corTestPretty(subset(gpDF, context == 'Conceptual' & tau <= upperLimitTau)$meanScore, subset(gpDF, context == 'Conceptual' & tau <= upperLimitTau)$tau) #outiers removed
+# #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$tau,  method = 'kendall')
+# corTestPretty(subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$meanScore, subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$tau) #outiers removed
+```
+
+
+## Bayesian Mean Tracker
+
+
+
+```{r  fig.height = 5, fig.width = 12}
+#Compile the plotting dataframes
+k<- 'BMT'
+a<- "UCB"
+conceptualDF<- subset(paramEstimates, kernel==k & acq==a & context=="Conceptual")
+conceptualParams <- ddply(conceptualDF, ~participant+environment+contextOrder, plyr::summarize, ConceptualSigma=mean(kError), Conceptualbeta = mean(beta), Conceptualtau = mean(tau))
+
+gridDF<- subset(paramEstimates, kernel==k & acq==a & context == "Spatial")
+gridParams <- ddply(gridDF, ~participant+environment+contextOrder, plyr::summarize, SpatialSigma=mean(kError), Spatialbeta = mean(beta), Spatialtau = mean(tau))
+
+bmtDF <- merge(conceptualParams, gridParams, by=c("participant", "environment", "contextOrder"))
+bmtDF$environment <- factor(bmtDF$environment, levels=c("Rough", "Smooth"))
+
+
+#Error Variance
+#Max axis value using Tukey's outlier removal critereon (for the larger of the two axes)
+uppertquartiles <- c(quantile(bmtDF$ConceptualSigma, probs=c(.25, .75))[2], quantile(bmtDF$SpatialSigma, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(bmtDF$ConceptualSigma, na.rm = T), 1.5 * IQR(bmtDF$SpatialSigma, na.rm = T))
+upperLimitSigma <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p5a <- ggplot(subset(bmtDF,ConceptualSigma <= upperLimitSigma &  SpatialSigma<= upperLimitSigma), aes(ConceptualSigma, SpatialSigma)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment
+  expand_limits(x = 0, y = 0) +
+  xlab(expression("Conceptual "*sigma[epsilon]^2))+
+  ylab(expression("Spatial "*sigma[epsilon]^2)) +
+  scale_x_continuous(limits=c(0,upperLimitSigma)) +
+  scale_y_continuous(limits=c(0,upperLimitSigma)) +
+  theme_classic()+
+  ggtitle('Inverse Sensitivity')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'), legend.position='none', 
+        legend.background = element_rect(fill='transparent'))
+p5a <- ggExtra::ggMarginal(p5a, type = "boxplot", fill='transparent', size = 10, outlier.shape = NA) #add marginal boxplots
+
+#BETA
+#Upper limits
+uppertquartiles <- c(quantile(bmtDF$Conceptualbeta, probs=c(.25, .75))[2], quantile(bmtDF$Spatialbeta, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(bmtDF$Conceptualbeta, na.rm = T), 1.5 * IQR(bmtDF$Spatialbeta, na.rm = T))
+upperLimitBeta <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p5b <- ggplot(subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta), aes(Conceptualbeta, Spatialbeta)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  expand_limits(x = 0, y = 0) +
+  scale_x_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  scale_y_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  xlab(expression("Conceptual "*beta))+
+  ylab(expression("Spatial "*beta)) +
+  theme_classic()+
+  ggtitle('Exploration Bonus')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'), legend.position="None")
+p5b <- ggExtra::ggMarginal(p5b, type = "boxplot", fill='transparent', size=10)
+
+
+#TAU
+#upper limits
+uppertquartiles <- c(quantile(bmtDF$Conceptualtau, probs=c(.25, .75))[2], quantile(bmtDF$Spatialtau, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(bmtDF$Conceptualtau, na.rm = T), 1.5 * IQR(bmtDF$Spatialtau, na.rm = T))
+upperLimitTau <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p5c <- ggplot(subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau), aes(Conceptualtau, Spatialtau)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  xlab(expression("Conceptual "*tau))+
+  scale_x_continuous(limits=c(0,upperLimitTau)) +
+  scale_y_continuous(limits=c(0,upperLimitTau)) +
+  ylab(expression("Spatial "*tau)) +
+  theme_classic()+
+  ggtitle('Temperature')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='right')
+leg <- get_legend(p5c) #extract legend
+p5c <- p5c + theme(legend.position = 'none')
+p5c<- ggExtra::ggMarginal(p5c, type = "boxplot", fill='transparent', size=10)
+
+
+BMTparameterPlots <- cowplot::plot_grid(p5a, p5b, p5c,leg, nrow = 1, rel_widths = c(1,1,1,.5))
+BMTparameterPlots
+```
+
+We also see pretty similar results for the BMT.
+
+
+### Error Variance $\sigma_\epsilon ^2$
+There were lower estimates of the error variance ($\sigma_\epsilon ^2$) in the conceptual task (Wilcoxon signed-rank test: $Z=-4.8$, $p<.001$, $r=-.42$, $BF>100$; with outliers removed: $t(119)=-5.5$, $p<.001$, $d=0.6$, $BF>100$), suggesting participants were more sensitive to the reward values (i.e., more substantial updates to their means estimates). Error variance was also weakly (`$r_{\tau}=.18$, $p=.003$, $BF=10$; without outliers: $r=.28$, $p=.002$, $BF=21$).
+
+### Exploration bonus $\beta$
+Again, we find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.9$, $p<.001$, $r=-.52$, $BF>100$; without outliers: $t(119)=-7.9$, $p<.001$, $d=1.0$, $BF>100$). It seems unlikely that these estimates are correlated between the two tasks, with ambiguous evidence from our statistical tests ($r_{\tau}=.16$, $p=.006$, $BF=4.8$; without outliers:$r=.14$, $p=.141$, $BF=.59$).
+
+### Temperature $\tau$
+And in line with the GP results above, we again find an increase in random exploration in the conceptual taskl ($Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$; without outliers: $t(108)=7.6$, $p<.001$, $d=0.8$, $BF>100$). Once more, temperatre estimates were strongly correlated ($r_{\tau}=.34$, $p<.001$, $BF>100$; without outliers $r=.33$, $p<.001$, $BF=70$).
+
+
+#### Full data
+
+|                           	| Rank-test 	| Rank Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Error Variance $\sigma_\epsilon ^2$ |$Z=-4.8$, $p<.001$, $r=-.42$, $BF>100$|$r_{\tau}=.18$, $p=.003$, $BF=10$|
+| Exploration Bonus $\beta$ 	|$Z=-5.9$, $p<.001$, $r=-.52$, $BF>100$|$r_{\tau}=.16$, $p=.006$, $BF=4.8$|
+| Temperature $\tau$        	|$Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$|$r_{\tau}=.34$, $p<.001$, $BF>100$ |
+
+
+#### Outliers Removed
+
+|                           	| $t$-test 	| Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Error Variance $\sigma_\epsilon ^2$	|$t(119)=-5.5$, $p<.001$, $d=0.6$, $BF>100$|$r=.28$, $p=.002$, $BF=21$|
+| Exploration Bonus $\beta$ 	|$t(119)=-7.9$, $p<.001$, $d=1.0$, $BF>100$ |$r=.14$, $p=.141$, $BF=.59$ |
+| Temperature $\tau$        	|$t(108)=7.6$, $p<.001$, $d=0.8$, $BF>100$ |$r=.33$, $p<.001$, $BF=70$ |
+
+
+Code for statistical tests below
+```{r eval=FALSE}
+#Error Variance 
+#Full data
+ranktestPretty(bmtDF$ConceptualSigma,bmtDF$SpatialSigma, paired=T)  #rank test
+corTestPretty(bmtDF$ConceptualSigma,bmtDF$SpatialSigma, method ='kendall') #correlation
+#Outliers removed
+ttestPretty(subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$ConceptualSigma,subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$SpatialSigma,  paired=T) 
+corTestPretty(subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$ConceptualSigma,subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$SpatialSigma)
+
+#Beta
+#Full Data
+ranktestPretty(bmtDF$Conceptualbeta,bmtDF$Spatialbeta, paired=T) 
+corTestPretty(bmtDF$Conceptualbeta,bmtDF$Spatialbeta, method='kendall')
+#Outliers removed
+ttestPretty(subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
+corTestPretty(subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
+
+#Tau
+#Full data
+ranktestPretty(bmtDF$Conceptualtau,bmtDF$Spatialtau, paired=T) #full data
+corTestPretty(bmtDF$Conceptualtau,bmtDF$Spatialtau, method='kendall')
+#outliers removed
+ttestPretty(subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
+corTestPretty(subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
+```
+
+## GP with Shepard Kernel
+
+We also tried a variant model where instead of using the RBF kernel, we used a Shepard kernel [@jakel2008similarity] where rather than using squared Euclidean distance, we use Minkowski distance and estimate the order parameter $\rho$:
+
+$$
+k_{Shepard}(\mathbf{x},\mathbf{x}') = \frac{\left(\sum_i|x_i - x'_i|^{\rho}\right)^{1/\rho}}{2\lambda^2}
+$$
+When $\rho=2$, the Shepard kernel is equivalent to the RBF kernel. When $\rho<2$, then the separate dimensions are less than fully integrated with each other, suggesting people are generalizing more independently along the two dimensions. 
+
+```{r}
+#Reload models and not omit the shepard kernel thid time
+modelFit <- read.csv('modelResults/modelFit.csv')
+paramEstimates <- read.csv('modelResults/paramEstimates.csv') 
+modelFit$kernel <- factor(modelFit$kernel, levels=c('RBF','SimKernel',  'BMT')) #reorder levels
+levels(modelFit$kernel) <- c('GP','Shepard', 'BMT') #rename levels
+paramEstimates$kernel <- factor(paramEstimates$kernel, levels=c('RBF','SimKernel',  'BMT')) #reorder levels
+levels(paramEstimates$kernel) <- c('GP','Shepard', 'BMT') #rename levels
+
+ggplot(modelFit, aes(x = kernel, y = R2, fill = kernel))+
+  stat_summary(fun.y=mean, geom='bar', color = 'black')+
+  stat_summary(fun.data=mean_se, geom='errorbar', color = 'black', width = 0.2)+
+  facet_grid(~context, labeller=as_labeller(contextLabels)) +
+  #theme_classic()+
+  ylab('Predictive Accuracy')+
+  xlab('')+
+  #scale_color_manual(values = c(gpCol,"#a6761d", bmtCol), name='')+
+  scale_fill_manual(values = c(gpCol,shepardCol, bmtCol), name='')+ 
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+```
+
+Compared against the standard RBF kernel, the Shepard kernel makes better predictions in both the conceptual (`r ttestPretty(subset(modelFit, context == 'Conceptual' & kernel == 'Shepard')$nLL, subset(modelFit, context == 'Conceptual' & kernel == 'GP')$nLL, paired=T)`) and spatial tasks (`r ttestPretty(subset(modelFit, context == 'Spatial' & kernel == 'Shepard')$nLL, subset(modelFit, context == 'Spatial' & kernel == 'GP')$nLL, paired=T)`).
+
+If we add it to the hierarchical Bayesian model comparison...
+```{r}
+#commented out to avoid clashing with the two model comparison above
+#write.table(cbind(subset(modelFit, context =='Conceptual' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Conceptual' & ModelName == 'SimKernel-UCB')$nLL, subset(modelFit, context =='Conceptual' & ModelName == 'BMT-UCB')$nLL), 'modelResults/conceptualdiffevidence.csv', row.names = FALSE, sep=',', col.names=FALSE)
+#write.table(cbind(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Spatial' & ModelName == 'SimKernel-UCB')$nLL, subset(modelFit, context =='Spatial' & ModelName == 'BMT-UCB')$nLL), 'modelResults/spatialdiffevidence.csv', row.names = FALSE, sep=',',col.names=FALSE)
+
+#build dataframe with output
+pxpDF <- data.frame(model= rep(c('GP', 'Shepard', 'BMT'),2), context = c('Conceptual', 'Conceptual', 'Conceptual','Spatial','Spatial','Spatial'), pxp= c(2.3074e-05,0.99995,2.5074e-05 ,3.5182e-05,0.99993,3.3182e-05 )) #Output pasted in here to avoid clashing with the two model comparison above
+#Reorder levels
+pxpDF$model <- factor(pxpDF$model , levels=c('GP', 'Shepard', 'BMT'))
+
+ggplot(pxpDF, aes(x = model, y = pxp, fill = model))+
+  geom_bar(stat="identity",color='black')+
+  facet_grid(~context,labeller=as_labeller(contextLabels))+
+  ylab('PXP')+
+  xlab('')+
+  scale_y_continuous(labels = percent)+
+  expand_limits(y=0)+
+  #scale_fill_manual(values = c(gpCol,"#a6761d", bmtCol), name='')+
+  scale_fill_manual(values = c(gpCol,shepardCol,bmtCol), name='')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+```
+ Now let's look at whether this additional parameter actually tells us anything informative...
+
+```{r fig.height = 5, fig.width = 16}
+
+k<- 'Shepard'
+a<- "UCB"
+conceptualDF<- subset(paramEstimates, kernel==k & acq==a & context=="Conceptual")
+conceptualParams <- ddply(conceptualDF, ~participant+environment+contextOrder, plyr::summarize, Conceptuallambda=mean(lambda), Conceptualbeta = mean(beta), Conceptualtau = mean(tau), Conceptualp = mean(p))
+
+gridDF<- subset(paramEstimates, kernel==k & acq==a & context == "Spatial")
+gridParams <- ddply(gridDF, ~participant+environment+contextOrder, plyr::summarize, Spatiallambda=mean(lambda), Spatialbeta = mean(beta), Spatialtau = mean(tau), Spatialp = mean(p))
+
+shepardDF <- merge(conceptualParams, gridParams, by=c("participant", "environment", "contextOrder"))
+shepardDF$environment <- factor(shepardDF$environment, levels=c("Rough", "Smooth"))
+
+
+#LAMBDA 
+#Max axis value using Tukey's outlier removal critereon (for the larger of the two axes)
+uppertquartiles <- c(quantile(shepardDF$Conceptuallambda, probs=c(.25, .75))[2], quantile(shepardDF$Spatiallambda, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(shepardDF$Conceptuallambda, na.rm = T), 1.5 * IQR(shepardDF$Spatiallambda, na.rm = T))
+upperLimitLambda <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p6a <- ggplot(subset(shepardDF,Conceptuallambda <= upperLimitLambda &  Spatiallambda<= upperLimitLambda), aes(Conceptuallambda, Spatiallambda)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment
+  expand_limits(x = 0, y = 0) +
+  xlab(expression("Conceptual "*lambda))+
+  ylab(expression("Spatial "*lambda)) +
+  scale_x_continuous(limits=c(0,upperLimitLambda)) +
+  scale_y_continuous(limits=c(0,upperLimitLambda)) +
+  theme_classic()+
+  ggtitle('Generalization')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'), legend.position='none', 
+        legend.background = element_rect(fill='transparent'))
+p6a <- ggExtra::ggMarginal(p6a, type = "boxplot", fill='transparent', size = 10, outlier.shape = NA) #add marginal boxplots
+
+#RHO
+#Max axis value using Tukey's outlier removal critereon (for the larger of the two axes)
+uppertquartiles <- c(quantile(shepardDF$Conceptualp, probs=c(.25, .75))[2], quantile(shepardDF$Spatialp, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(shepardDF$Conceptualp, na.rm = T), 1.5 * IQR(shepardDF$Spatialp, na.rm = T))
+upperLimitp <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p6b <- ggplot(subset(shepardDF,Conceptualp <= upperLimitp &  Spatialp<= upperLimitp), aes(Conceptualp, Spatialp)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment
+  expand_limits(x = 0, y = 0) +
+  xlab(expression("Conceptual "*rho))+
+  ylab(expression("Spatial "*rho)) +
+  scale_x_continuous(limits=c(0,upperLimitp)) +
+  scale_y_continuous(limits=c(0,upperLimitp)) +
+  theme_classic()+
+  ggtitle('Minkowski Distance')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'), legend.position='none', 
+        legend.background = element_rect(fill='transparent'))
+p6b <- ggExtra::ggMarginal(p6b, type = "boxplot", fill='transparent', size = 10, outlier.shape = NA) #add marginal boxplots
+
+#BETA
+#Upper limits
+uppertquartiles <- c(quantile(shepardDF$Conceptualbeta, probs=c(.25, .75))[2], quantile(shepardDF$Spatialbeta, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(shepardDF$Conceptualbeta, na.rm = T), 1.5 * IQR(shepardDF$Spatialbeta, na.rm = T))
+upperLimitBeta <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p6c <- ggplot(subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta), aes(Conceptualbeta, Spatialbeta)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  expand_limits(x = 0, y = 0) +
+  scale_x_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  scale_y_continuous(limits=c(0,upperLimitBeta), breaks= scales::pretty_breaks(n = 5)) +
+  xlab(expression("Conceptual "*beta))+
+  ylab(expression("Spatial "*beta)) +
+  theme_classic()+
+  ggtitle('Exploration Bonus')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'), legend.position="None")
+p6c <- ggExtra::ggMarginal(p6c, type = "boxplot", fill='transparent', size=10)
+
+
+#TAU
+#Upper limits
+uppertquartiles <- c(quantile(shepardDF$Conceptualtau, probs=c(.25, .75))[2], quantile(shepardDF$Spatialtau, probs=c(.25, .75))[2]) #upper quartiles
+H <- c(1.5 * IQR(shepardDF$Conceptualtau, na.rm = T), 1.5 * IQR(shepardDF$Spatialtau, na.rm = T))
+upperLimitTau <- max(uppertquartiles + H) #use the larger 1.5 * IQR from the upper quartile to set axis limits
+
+p6d <- ggplot(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau), aes(Conceptualtau, Spatialtau)) +
+  geom_abline(slope = 1, intercept=0, color = 'black', linetype = 'dashed')+
+  geom_point(aes(color=environment, shape=environment), size =3, alpha=0.9)+ #environment order
+  xlab(expression("Conceptual "*tau))+
+  scale_x_continuous(limits=c(0,upperLimitTau)) +
+  scale_y_continuous(limits=c(0,upperLimitTau)) +
+  ylab(expression("Spatial "*tau)) +
+  theme_classic()+
+  ggtitle('Temperature')+
+  theme(plot.title = element_text(size=16))+
+  scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
+  scale_shape_manual(name="", values= c(17,16))+
+  theme(text = element_text(size=16,  family="sans"))+
+  theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='right')
+leg <- get_legend(p6d) #extract legend
+p6d <- p6d + theme(legend.position = 'none')
+p6d<- ggExtra::ggMarginal(p6d, type = "boxplot", fill='transparent', size=10)
+
+
+shepardParamPlots <- cowplot::plot_grid(p6a, p6b, p6c, p6d, leg, nrow = 1, rel_widths = c(1,1,1,1, .5))
+shepardParamPlots
+```
+
+### Generalization $\lambda$
+Again we find mixed evidence for differences in generalization between tasks ($Z=-1.8$, $p=.039$, $r=-.15$, $BF=.32$; outliers removed: $t(98)=-2.8$, $p=.007$, $d=0.4$, $BF=4.1$). There is also marginal evidence of correlated estimates ($r_{\tau}=.13$, $p=.026$, $BF=1.3$; outliers removed: $r=.21$, $p=.033$, $BF=2.0$).
+
+### Minkowski order $\rho$
+There is anecdotal evidence of lower $\rho$ estimates in the conceptual task ($Z=-2.5$, $p=.006$, $r=-.22$, $BF=2.0$ ; outliers removed: $t(128)=-2.7$, $p=.008$, $d=0.3$, $BF=3.3$). The implication of a lower $\rho$ in the conceptual domain is that the Gabor features were treated more independently, whreas the spatial dimensions were more integrated. However, the statistics don't suggest this to be a very robust effect. These estimates are also not correlated ($r_{\tau}=-.02$, $p=.684$, $BF=.12$; outliers removed: $r=-.04$, $p=.653$, $BF=.22$). They actually seem pretty random.
+
+### Exploration bonus $\beta$
+Consistent with all the other models, we find systematically lower exploration bonuses in the conceptual task ($Z=-5.5$, $p<.001$, $r=-.49$, $BF>100$; outliers removed: $t(121)=-6.6$, $p<.001$, $d=0.8$, $BF>100$). There is ambiguous evidence of a correlation across tasks ($r_{\tau}=.14$, $p=.021$, $BF=1.6$; outliers removed: r=.09$, $p=.338$, $BF=.32$).
+
+### Temperature $\tau$
+And like all other models, we find clear evidence of higher temperatures in the conceptual task ($Z=-6.3$, $p<.001$, $r=-.56$, $BF>100$; outliers removed: $t(105)=6.5$, $p<.001$, $d=0.7$, $BF>100$), with strong correlations across tasks ($r_{\tau}=.41$, $p<.001$, $BF>100$; $r=.32$, $p<.001$, $BF=45$ )
+
+
+
+#### Full data
+
+|                           	| Rank-test 	| Rank Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Generalization $\lambda$  	|$Z=-1.8$, $p=.039$, $r=-.15$, $BF=.32$ |$r_{\tau}=.13$, $p=.026$, $BF=1.3$ |
+|  Minkowski order $\rho$ 	  |$Z=-2.5$, $p=.006$, $r=-.22$, $BF=2.0$ |$r_{\tau}=-.02$, $p=.684$, $BF=.12$ |
+| Exploration Bonus $\beta$ 	|$Z=-5.5$, $p<.001$, $r=-.49$, $BF>100$ | $r_{\tau}=.14$, $p=.021$, $BF=1.6$ |
+| Temperature $\tau$        	|$Z=-6.3$, $p<.001$, $r=-.56$, $BF>100$ |$r_{\tau}=.41$, $p<.001$, $BF>100$ |
+
+
+#### Outliers Removed
+
+|                           	| $t$-test 	| Correlation 	|
+|---------------------------	|-----------	|-------------	|
+| Generalization $\lambda$  	|$t(98)=-2.8$, $p=.007$, $d=0.4$, $BF=4.1$ |$r=.21$, $p=.033$, $BF=2.0$ |
+|  Minkowski order $\rho$ 	  |$t(128)=-2.7$, $p=.008$, $d=0.3$, $BF=3.3$ |$r=-.04$, $p=.653$, $BF=.22$ |
+| Exploration Bonus $\beta$ 	|$t(121)=-6.6$, $p<.001$, $d=0.8$, $BF>100$ |$r=.09$, $p=.338$, $BF=.32$ |
+| Temperature $\tau$        	|$t(105)=6.5$, $p<.001$, $d=0.7$, $BF>100$ |$r=.32$, $p<.001$, $BF=45$ |
+
+
+
+Here is all the code for these statistical tests below
+
+```{r eval = FALSE}
+#Lambda 
+#Full data
+ranktestPretty(shepardDF$Conceptuallambda,shepardDF$Spatiallambda, paired=T)  #rank test
+corTestPretty(shepardDF$Conceptuallambda,shepardDF$Spatiallambda, method ='kendall') #correlation
+#Outliers removed
+ttestPretty(subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda,  paired=T) 
+corTestPretty(subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda)
+
+
+#Rho
+#Full Data
+ranktestPretty(shepardDF$Conceptualp,shepardDF$Spatialp, paired=T) #Note, sometimes the gibbs sampler doesn't converge for the Bayes Factor
+corTestPretty(shepardDF$Conceptualp,shepardDF$Spatialp, method='kendall')
+#Outliers removed
+ttestPretty(subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Conceptualp,subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Spatialp,  paired=T) 
+corTestPretty(subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Conceptualp,subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Spatialp)
+
+#Beta
+#Full Data
+ranktestPretty(shepardDF$Conceptualbeta,shepardDF$Spatialbeta, paired=T) 
+corTestPretty(shepardDF$Conceptualbeta,shepardDF$Spatialbeta, method='kendall')
+#Outliers removed
+ttestPretty(subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
+corTestPretty(subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
+
+#Tau
+#Full data
+ranktestPretty(shepardDF$Conceptualtau,shepardDF$Spatialtau, paired=T) #full data
+corTestPretty(shepardDF$Conceptualtau,shepardDF$Spatialtau, method='kendall')
+#outliers removed
+ttestPretty(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
+corTestPretty(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
+```
+
+# Save plots
+## Main plot
+```{r fig.height = 10, fig.width = 10}
+TopRow <- cowplot::plot_grid(p1,p2, nrow =1, labels = 'auto')
+pModel <- cowplot::plot_grid(TopRow, p3, GPparameterPlots, ncol=1, labels = c("", "c", "d"))
+pModel
+ggsave('plots/ModelResults.pdf',pModel, width = 9, height = 8, unit='in', useDingbats=F)
+```
+
+## SI Plots
+Additional Model Results
+
+```{r}
+SImodels <- plot_grid(pAccuracyR2, pModelDiff, taskOrderP, nrow = 1, labels = 'auto')
+SImodels
+
+ggsave('plots/SImodels.pdf', SImodels, width = 9, height = 3, units = 'in')
+```
+Model paramers and performance
+
+```{r}
+paramPerf <- plot_grid(pLambda,pBeta, pTau, ncol = 3, labels = 'auto')
+paramPerf
+
+ggsave('plots/paramsPerf.pdf', paramPerf, width = 9, height = 5, units = 'in')
+```
+
+
+Comparing exploration bonus and temperature
+
+```{r}
+explorationComparison <- plot_grid(explorationConceptual, explorationSpatial, rel_widths = c(1,1.3),labels='auto')
+explorationComparison
+ggsave('plots/explorationComparison.pdf',explorationComparison, width = 7, height = 3, unit='in', useDingbats=F)
+```
+
+Parameters of the BMT and Shepard Kernel models
+
+```{r}
+ggsave('plots/BMTParams.pdf',BMTparameterPlots, width = 12, height = 4, unit='in', useDingbats=F)
+ggsave('plots/ShepardParams.pdf',shepardParamPlots, width = 16, height = 4, unit='in', useDingbats=F)
+```
+
+
+# References
+
+
+

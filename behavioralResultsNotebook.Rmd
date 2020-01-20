@@ -1,0 +1,805 @@
+---
+title: "Behavioral Results"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+---
+
+Behavioral results. Let's look at how participants performed in the task
+
+```{r message=FALSE}
+#house keeping
+rm(list=ls())
+#load packages
+packages <- c('dplyr','cowplot', 'Rmisc', 'ggbeeswarm', 'brms',  'BayesFactor','scales',  'plyr', 'reshape2', 'ggridges', 'ggplot2', 'jsonlite', 'MASS', 'gridExtra', 'Hmisc', 'lsr', 'pander', 'ggsignif', 'rstatix', 'sjstats')
+invisible(lapply(packages, require, character.only = TRUE))
+
+theme_set(theme_cowplot(font_size=12))
+source('dataProcessing.R') 
+source('statisticalTests.R')
+#Wrapper for brm models such that it saves the full model the first time it is run, otherwise it loads it from disk
+run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
+  path <- paste0(path,'/', modelName, ".brm")
+  if (reuse) {
+    fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
+  }
+  if (is(fit, "try-error")) {
+    fit <- eval(expr)
+    saveRDS(fit, file = path)
+  }
+  fit
+}
+```
+
+First, let's load the data. These data import functions are defined in `dataProcessing.R` where I convert the raw data into a usuable dataframe. 
+
+```{r}
+dataDir <- 'experimentData/full.csv' #
+df <- dataImport(dataFile = dataDir ,normalize=F) #These two functions are defined in `dataProcessing.R`
+trajDF <- importTrajData(dataFile = dataDir,normalize=F)
+#Trim last rounds
+df<- subset(df, round<10) #Last round is the bonus round and is not included in the behavioral analysis, since the judgment task may bias subsequent performance
+
+n_rounds = 9 #without bonus round
+n_trials = 20 #per round
+```
+
+
+## Demographics
+```{r echo = FALSE}
+
+
+#Total participants
+paste0('Participants: ', length(unique(df$id)))
+
+#Age
+ageDF <- ddply(df, .(id), plyr::summarize,  age=as.numeric(unique(age)))
+paste0('Age: ', prettyNum(mean(ageDF$age) ), " ± " , prettyNum(sd(ageDF$age)))
+
+#gender
+genderDF <- ddply(df, .(id), plyr::summarize,  male=unique(gender)) #1 is male, 0 is female
+genderDF$male <- as.numeric(levels(genderDF$male)[as.integer(genderDF$male)])
+paste0("Males: ",sum(genderDF$male))
+
+#total bonus
+bonusDf <-  ddply(df, .(id), plyr::summarize,  bonus=as.numeric(unique(totalBonus))) #bonus
+paste0("Earnings :", mean(bonusDf$bonus)  + 8, " USD ± ", prettyNum(sd(bonusDf$bonus))) #including $9 participation fee
+
+#duration
+durationDF <-  ddply(df, .(id), plyr::summarize,  duration=grid_duration[1] + gabor_duration[1]) #bonus plus participation fee
+paste0("Task Duration: ", prettyNum(mean(na.omit(durationDF$duration))),  " mins ± ", prettyNum(sd(na.omit(durationDF$duration))))
+
+# time between tasks
+gap <- ddply(df, .(id), plyr::summarize, gap = unique(grid_gabor_gap))
+paste0("Gap between tasks: ", prettyNum(mean(na.omit(gap$gap))), " hours ± ", prettyNum(sd(na.omit(gap$gap))))
+
+```
+
+
+## Training Phase
+ 
+Before the main bandit task, participants performed a training phase where they were required to match a target stimuli until a learning criterion was met (at least 32 trials and a run of 9 out of 10 correct). The task used the same stimuli and inputs as the main bandit task, and was used to familiarize participants and have them achieve a similar level of fluency with both spatial and conceptual domains. Let's first look at some of the results.
+
+Participants had a lower accuracy on the conceptual training (`r dat <- ddply(df, ~id+context, plyr::summarize, trajCorrect = mean(trajCorrect), trajAvgSteps = mean(trajAvgSteps)) 
+ttestPretty(subset(dat, context == 'Spatial')$trajCorrect, subset(dat, context == 'Conceptual')$trajCorrect, paired=T)`) and required more trials to reach the training criterion ($Z=-4.1$, $p<.001$, $r=-.40$, $BF>100$), which is to be expected since it is intuitively more difficult. 
+
+```{r}
+#Overall Correct choices
+dat <- ddply(df, ~id+context, plyr::summarize, trajCorrect = mean(trajCorrect), trajAvgSteps = mean(trajAvgSteps))
+trajp1a<- ggplot(dat, aes(x = context, y = trajCorrect, color = context))+
+  geom_line(aes(group=id),color = 'black', alpha = 0.1)+
+  geom_boxplot(outlier.shape = NA, fill=NA, color = 'black', width = 0.1)+
+  geom_quasirandom(alpha = 0.7)+
+  stat_summary(fun.y=mean, geom='point', shape=23, color = 'black', size =3)+
+  ylab('P(correct)')+
+  xlab('')+
+  scale_color_brewer(palette = "Dark2", name = "") +
+  theme(legend.position='none')
+trajp1a
+
+#Trials until complete
+dat <- ddply(trajDF, ~id+context, plyr::summarize, trajTrials = max(trial))
+#ttestPretty(subset(dat, context == 'Spatial')$trajTrials, subset(dat, context == 'Conceptual')$trajTrials, paired=T) #Data doesn't look very normal
+#ranktestPretty(subset(dat, context == 'Spatial')$trajTrials, subset(dat, context == 'Conceptual')$trajTrials, paired=T) #Is there a meaninful difference in the number of trials needed to finish the training phase? #Note sometimes Bayes Factors display as NA when they are very large
+
+trajComplete <- ggplot(dat, aes(x = context, y = trajTrials, color = context))+
+  geom_line(aes(group=id),color = 'black', alpha = 0.1)+
+  geom_quasirandom( alpha = 0.6)+
+  geom_boxplot(color='black', fill= NA, width =.2, outlier.shape = NA)+
+  stat_summary(fun.y = mean, geom='point', shape = 23,size=3, color = 'black')+
+  geom_hline(yintercept = 32, linetype = 'dashed')+
+  scale_color_brewer(palette = "Dark2", name = "") +
+  ylab('Trials Until Complete')+
+  xlab('')+
+  #coord_cartesian(ylim=c(30,128), )+
+  scale_y_continuous(breaks=c(32,64, 96, 128), limits = c(32,128))+
+  theme(legend.position = 'none')
+trajComplete
+
+```
+
+We can also look at the magnitude of errors vs. the frequenvy of occurence, which gives us a nice Shepard (1987) style generalization gradient.
+```{r}
+#Magnitude of error vs. frequency
+gradientDF <- ddply(trajDF, ~context+manhattanError,plyr::summarize, counts = table(manhattanError)) 
+#Normalize into a percentage
+gradientDF[gradientDF$context == 'Conceptual','P'] <- gradientDF[gradientDF$context == 'Conceptual','counts']/sum(gradientDF[gradientDF$context == 'Conceptual','counts'])
+gradientDF[gradientDF$context == 'Spatial','P'] <- gradientDF[gradientDF$context == 'Spatial','counts']/sum(gradientDF[gradientDF$context == 'Spatial','counts'])
+
+pError<- ggplot(gradientDF, aes(x = manhattanError, y = P, color = context, shape = context))+
+  geom_line()+
+  geom_point()+
+  coord_cartesian(xlim=c(0,5))+
+  ylab('P(error)')+
+  xlab('Magnitude of Error (Manhattan distance)')+
+  scale_color_brewer(palette = "Dark2", name = "Task")+
+  scale_shape_manual( values = c(16,15),name = "Task")+
+  theme(legend.position=c(1,1), legend.justification = c(1,1))
+
+pError
+```
+
+How did accuracy differ for the different options?
+```{r}
+
+spatialCounts <- ddply(subset(trajDF, context == 'Spatial'), .(x, y), plyr::summarize, correct = sum(trajCorrect)/length(trajCorrect))
+names(spatialCounts) <- c("X", "Y", "Accuracy")
+spatialCounts$task <- 'Spatial'
+
+conceptCounts <- ddply(subset(df, context == 'Conceptual'), .(x, y), plyr::summarize, correct = sum(trajCorrect)/length(trajCorrect))
+names(conceptCounts) <- c("X", "Y", "Accuracy")
+conceptCounts$task <- 'Conceptual'
+
+trainingAccuracyDF <-rbind(spatialCounts, conceptCounts)
+trajheatmap<- ggplot(trainingAccuracyDF, aes(x=X, y = Y, fill=Accuracy)) +
+  geom_tile()+
+  scale_fill_distiller(palette = "Spectral", name = 'P(correct)',limits = c(0,1),labels = scales::percent_format(accuracy = 1))+
+  theme_classic() +
+  facet_grid(~task)+
+  coord_equal() +
+  theme(strip.background=element_blank(), legend.key=element_rect(color=NA), axis.line=element_blank(),axis.text.x=element_blank(),
+        axis.text.y=element_blank(),axis.ticks=element_blank(), panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),plot.background=element_blank())+
+  labs(x = '', y = '')
+trajheatmap
+```
+
+## Performance
+
+Now let's finally look at performance on the bandit task.
+
+```{r}
+#Construct plotting dataframes
+meanDF <- ddply(df, .(id, context, environment, contextOrder), plyr::summarize, meanScore = mean(z))
+conceptualScores <- subset(meanDF, context == "Conceptual")
+spatialScores <- subset(meanDF, context == "Spatial")
+mergedDF <- merge(conceptualScores, spatialScores, by ="id")
+joinedDF <- rbind(conceptualScores, spatialScores)
+bothTasksDF <- ddply(joinedDF, .(id, environment, contextOrder), plyr::summarize, meanScore = mean(meanScore))
+randomDF <- read.csv("rationalModels/random.csv") #load random model
+
+joinedDF$contextOrder <- factor(joinedDF$contextOrder)
+levels(joinedDF$contextOrder)<- c("Spatial First", "Conceptual First")
+
+```
+Overall, participants performed far better than chance in both Conceptual ($t(128)=24.6$, $p<.001$, $d=2.2$, $BF>100$) and Spatial tasks ($t(128)=34.6$, $p<.001$, $d=3.0$, $BF>100$).  Let's now do a two way mixed ANOVA to see how our context x environment design influenced performance.
+
+```{r}
+#Two way mixed ANOVA: context is within, environment is between 
+dd<-ddply(rbind(conceptualScores, spatialScores), ~id+context+environment, summarise, m=mean(meanScore))
+dd$id <- factor(dd$id)
+res.aov <- aov(m ~ environment*context + Error(id/context), data=dd)
+anova_stats(res.aov)
+#Now compute Bayes factor
+invisible(bf <- anovaBF(m ~ environment*context+id,  data=dd,  whichRandom="id"))
+bf
+
+```
+Looks like strong evidence for differences.
+
+```{r}
+#Mean performance plots
+p1a <- ggplot(joinedDF, aes(x = interaction(context, environment), y = meanScore, color = context))+
+  geom_boxplot(fill=NA, color = 'black', outlier.shape=NA, width = 0.2)+
+  geom_line(aes(group=id), color = 'black', alpha = 0.1)+
+  geom_quasirandom(alpha = 0.7)+
+  geom_hline(yintercept = mean(randomDF$meanReward), color = 'black', linetype = 'dashed')+
+  stat_summary(fun.y = mean, shape = 23, geom='point', size = 3, fill = NA, color ='black')+
+  #facet_grid(~environment)+
+  ylab("Mean Reward \u00B1SE")+
+  xlab('')+
+  annotate('text', x = 1.5, y = 110, label='Rough')+
+  annotate('text', x = 3.5, y = 110, label='Smooth')+
+  scale_x_discrete(labels=c("Conceptual", "Spatial", "Conceptual", "Spatial"))+
+  scale_color_brewer(palette = "Dark2", name = "") +
+  scale_fill_brewer(palette = "Dark2", name = "") +
+  geom_signif(y_position = c(95, 97, 103),  xmin = c(1,3, 1.5), xmax = c(2,4, 3.5), annotation = c("BF>100","BF = 14", "BF = 12"), color = 'black')+
+  #geom_signif(comparisons=list( c("Conceptual", "Spatial"), c("Conceptual", "Spatial")), annotations=c("",""), col="black")+ # 
+  theme(text = element_text(size=12,  family="sans"),strip.background=element_blank(), legend.key=element_rect(color=NA), legend.position='None')
+p1a
+```
+
+Participants earned higher rewards in the Spatial than the Conceptual task (one sample $t$-test: $t(128)=-6.0$, $p<.001$, $d=0.5$, $BF>100$) and better in smooth than in rough environments (two sample $t$-test: $t(127)=3.1$, $p=.003$, $d=0.5$, $BF=12$). We also find correlated performance between tasks ($r=.53$, $p<.001$, $BF>100$).
+
+```{r message=FALSE}
+#statistical tests
+ttestPretty(conceptualScores$meanScore, mu=mean(randomDF$meanReward)) #compared to chance
+ttestPretty(spatialScores$meanScore, mu=mean(randomDF$meanReward))
+
+#T-tests
+ttestPretty(conceptualScores$meanScore, spatialScores$meanScore, var.equal = TRUE, paired=T) #context
+ttestPretty(subset(bothTasksDF, environment=="Smooth")$meanScore, subset(bothTasksDF, environment=="Rough")$meanScore, var.equal = TRUE) #environment
+corTestPretty(conceptualScores$meanScore, spatialScores$meanScore) #correlated performance
+ttestPretty(subset(conceptualScores, environment=='Smooth')$meanScore, subset(spatialScores, environment=="Smooth")$meanScore, var.equal = TRUE, paired=T) #context
+ttestPretty(subset(conceptualScores, environment=='Rough')$meanScore, subset(spatialScores, environment=="Rough")$meanScore, var.equal = TRUE, paired=T, maxBF = Inf) #context
+
+```
+
+
+```{r}
+#corTestPretty(conceptualScores$meanScore, spatialScores$meanScore)
+p1b <- ggplot(mergedDF, aes(x=meanScore.x, y = meanScore.y, color = environment.x, shape= environment.x)) +
+  geom_abline(slope=1, intercept=0, linetype='dashed') +
+  geom_point(alpha=0.9, size = 2.5)+
+  ylab('Spatial Reward')+
+  xlab('Conceptual Reward')+
+  xlim(40,100)+
+  ylim(40,100) +
+  annotate("text", x = 50, y = 95, label = "'r = .53' *','* ~~'BF > 100'", parse=TRUE, size=5, family="sans") +
+  theme(legend.position=c(1,0),legend.justification=c(1,0), strip.background=element_blank(), legend.key=element_rect(color=NA), text = element_text(size=12,  family="sans"))+
+  #scale_color_rickandmorty(name="Environment", palette = "schwifty")+
+  scale_color_manual(name="Environment", values=c("#24325FFF", '#B7E4F9FF'))+
+  scale_shape_manual(name="Environment", values= c(17,16))
+p1b
+```
+
+### Order effect
+
+We find a really interesting one-directional order effect. Participants performed better on the conceptual task once they had experience with the spatial task (`r ttestPretty(subset(conceptualScores, contextOrder==0)$meanScore, subset(conceptualScores, contextOrder==1)$meanScore, var.equal = TRUE)`. This was not the case for the spatial task, where performance did not differ if performed first or second (`r ttestPretty(subset(spatialScores, contextOrder==0)$meanScore, subset(spatialScores, contextOrder==1)$meanScore, var.equal = TRUE)`).  Thus, experience with spatial search boosted performance on conceptual search, but not vice versa.
+
+```{r}
+df$FirstTask <- ifelse(df$contextOrder==0, 'Spatial First', 'Conceptual First') #which task was performed first?
+df$taskOrder <- ifelse((df$FirstTask=="Spatial First" & df$context == "Spatial") |(df$FirstTask=="Conceptual First" & df$context == "Conceptual"), 1, 2 ) 
+df$FirstTask <- factor(df$FirstTask, levels = c("Spatial First", "Conceptual First"))
+orderDF <- ddply(df, .(id, context, environment, FirstTask, taskOrder), plyr::summarize, meanScore = mean(z))
+
+pOrder <- ggplot(orderDF, aes(x = FirstTask, y = meanScore, fill = context))+
+  stat_summary(fun.y=mean, geom='bar', position = position_dodge(width = 1), color='black')+
+  stat_summary(fun.data = mean_cl_boot, geom='errorbar', color='black', position = position_dodge(width = 1), width = .2)+
+  scale_fill_brewer(palette = 'Dark2', name= 'Task')+
+  coord_cartesian(ylim=c(0,110))+
+  scale_y_continuous(limits =c(0,110), expand = c(0, 0)) +
+  xlab('')+
+  ylab('Mean Reward ±SE')+
+  geom_signif(y_position = c(88, 100),  xmin = c(0.8,1.2), xmax = c(1.8,2.2), annotation = c("BF=0.67","BF=6.4"))+
+  #theme(legend.position=c(0.05,1), legend.justification = c(0,1), legend.direction='horizontal')
+  theme(legend.position='right')
+pOrder
+```
+
+
+## Learning over trials and rounds
+Participants improved strongly over trials (Pearson correlation between score and trial number: `r tdf <- ddply(df, .(trial), plyr::summarize, meanScore=mean(z))
+corTestPretty(tdf$meanScore, tdf$trial) `) and to a lesser extent over rounds (`r rdf <- ddply(df, .(round), plyr::summarize, meanScore=mean(z))
+corTestPretty(rdf$meanScore, rdf$round)`).
+```{r}
+#Mean score over trial
+trialDF <- ddply(df, .(id, context, environment, trial), plyr::summarize, meanScore=mean(z))
+randomDF <- read.csv("rationalModels/random.csv") #load random model
+
+p3a <- ggplot(trialDF, aes(x=trial, y = meanScore, color = context)) +
+  stat_summary(fun.y = mean, geom = 'line')+
+  stat_summary(fun.data = mean_se,aes ( fill=context), geom = 'ribbon', alpha = 0.7, color=NA) +
+  stat_summary(data = randomDF, aes(x=trial, y = meanReward), fun.y = mean, geom='line', color = 'black', fill=NA, linetype = 'dashed')+
+  #geom_hline(yintercept =  50, linetype = 'dashed', color = 'black')+
+  facet_grid(~environment)+
+  scale_fill_brewer(palette = "Dark2", name="Task" ) +
+  scale_color_brewer(palette = "Dark2", name="Task") +
+  #coord_cartesian(ylim=c(49,95))+
+  ylab("Mean Reward \u00B1SE") + 
+  scale_x_continuous(breaks = round(seq(0,20, by = 5),1))+
+  xlab("Trial")+
+  theme(legend.position=c(1, 0.15), legend.justification=c(1,0), strip.background=element_blank(), legend.key=element_blank(), legend.background=element_blank())
+p3a
+
+#Mean score over round
+roundDF <- ddply(df, .(id, context, environment, round), plyr::summarize, meanScore=mean(z))
+
+pRound <- ggplot(roundDF, aes(x=round, y = meanScore, color = context )) +
+  stat_summary(fun.y = mean, geom = 'line')+
+  stat_summary(fun.data = mean_se,aes(fill=context), geom = 'ribbon', alpha = 0.7, color=NA) +
+  stat_summary(data = randomDF, aes(x=trial, y = meanReward), fun.y = mean, geom='line', color = 'black', fill=NA, linetype = 'dashed')+
+  coord_cartesian(xlim=c(0,9))+
+  facet_grid(~environment)+
+  scale_fill_brewer(palette = "Dark2", name="Task") +
+  scale_color_brewer(palette = "Dark2", name="Task") +
+  ylab("Mean Reward \u00B1SE") + 
+  scale_x_continuous(breaks = round(seq(0,9, by = 2),1))+
+  #coord_cartesian(ylim=c(20,50))+
+  xlab("Round")+
+  theme(legend.position=c(0.05, 0.1), legend.justification=c(0,0), strip.background=element_blank(), legend.background=element_blank(), legend.key=element_rect(color=NA))
+
+pRound
+```
+
+## Patterns of Search
+### Locality of sampling
+
+Let's look at the patterns in search behavior. First, let's look at the distance between successive choices.
+
+```{r}
+#compare to random
+sampleSize <- 400000
+randomDistanceDF <- data.frame(x=sample(x = seq(0:7), size = sampleSize, replace=TRUE), y=sample(x = seq(0:7), size = sampleSize, replace=TRUE), environment=c(rep("Rough",sampleSize/2), rep("Smooth", sampleSize/2)), context = rep(c('Conceptual', 'Spatial'), sampleSize/2))
+randomDistanceDF <- randomDistanceDF %>%
+  mutate(distance = abs((x - lag(x,default = NA)) + abs(y - lag(y,default = NA)) ))
+
+
+#Add classification of choices as stay, near, or far decisions
+localityDF <-ddply(df, ~id+trial+context,  plyr::summarize, avgDistance=mean(distance, na.rm=T))
+localityDF$choiceType <-ifelse(localityDF$avgDistance==0, "Stay", ifelse(localityDF$avgDistance==1, "Near", "Far"))
+localityDF$choiceType <- factor(localityDF$choiceType)
+choiceProp <- ddply(na.omit(localityDF),.(id,context), function(x) with(x,data.frame(table(choiceType)/length(choiceType),2)))
+choiceProp$choiceType <- factor(choiceProp$choiceType, levels=c("Stay", "Near", "Far"))
+```
+Let's first do an ANOVA here
+
+```{r}
+#Two way mixed ANOVA: context is within, environment is between 
+dd <-ddply(df, ~id+environment+context,  plyr::summarize, avgDistance=mean(distance, na.rm=T))
+dd$id <- factor(dd$id)
+res.aov <- aov(avgDistance ~ environment*context + Error(id/context), data=dd)
+anova_stats(res.aov)
+#Now compute Bayes factor
+bf = anovaBF(avgDistance ~ environment*context+id,  data=dd,  whichRandom="id")
+bf
+
+```
+
+Let's plot the results
+```{r}
+
+contextLabels <- c('Conceptual' = 'Conceptual\nTask', 'Spatial' = 'Spatial\nTask', "Rough"="Rough", "Smooth"="Smooth")
+p4alt <- ggplot(na.omit(df), aes(x=distance, fill = context, color = context)) + 
+  geom_histogram(aes(y = ..density..*20), position = 'dodge', binwidth=1, color='black')+
+  stat_density(data = randomDistanceDF, aes(y = ..density..*20), geom="line",color='black', size = .8, bw = 1) +
+  #geom_density(fill=NA, size = 0.7) +
+  scale_fill_manual(values=c("#1B9E77", "#D95F02", "Black"), name="") +
+  scale_color_manual(values = c("#1B9E77", "#D95F02", "Black"), name="") +
+  ylab("Choices Per Round") +
+  xlab("Distance Between Choices") +
+  #xlim(0,6)+
+  facet_grid(context~environment,  labeller = as_labeller(contextLabels))+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5))+
+  scale_y_continuous(breaks = seq(0, 10, by = 2))+
+  #ggtitle("Locality of Sampling") +
+  theme(legend.position='none', strip.background=element_blank(), legend.key=element_rect(color=NA))
+p4alt
+```
+
+Let's try a different version where the differences between task are more salient
+```{r}
+
+contextLabels <- c('Conceptual' = 'Conceptual\nTask', 'Spatial' = 'Spatial\nTask', "Rough"="Rough", "Smooth"="Smooth")
+anndf<-data.frame(distance = NA,context =  NA,environment = factor("Smooth", levels = c("Rough", "Smooth")), text = 'Random', color = 'black') #for annotation
+p4alt <- ggplot(na.omit(df), aes(x=distance, fill = context, color = context)) + 
+  geom_histogram(aes(y = ..density..*20), position = 'identity', binwidth=1, alpha = 0.4)+
+  stat_density(data = subset(randomDistanceDF, context == 'Conceptual'), aes(y = ..density..*20), geom="line",color='black', size = .8, bw = 1) +
+  #geom_density(fill=NA, size = 0.7) +
+  scale_fill_manual(values=c("#1B9E77", "#D95F02", "Black"), name="Task") +
+  scale_color_manual(values = c("#1B9E77", "#D95F02", "Black"), name="Task") +
+  ylab("Choices Per Round") +
+  xlab("Distance Between Choices") +
+  #xlim(0,6)+
+  facet_grid(~environment,  labeller = as_labeller(contextLabels))+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5))+
+  scale_y_continuous(breaks = seq(0, 10, by = 2))+
+  #ggtitle("Locality of Sampling") +
+  #geom_text(data = anndf, x = 10.5, y = 5, label = "Random", color = 'black', size = 3.5)+
+  #geom_segment(data = anndf,  x = 9, xend = 10, y = 5, yend = 5,colour = "black", size = 1.2)+
+  theme(legend.position=c(1,1), legend.justification = c(1,1), strip.background=element_blank(), legend.key=element_rect(color=NA))
+p4alt
+```
+
+Participants searched over larger distances in the conceptual task than the spatial task ($t(128)=-3.7$, $p<.001$, $d=0.3$, $BF=59$). There were no differences across environments ($t(127)=-0.3$, $p=.727$, $d=0.06$, $BF=.20$). Note that each trial began on a random selected stimuli. So searching close to the previous selection is not due to a lack of effort. ($t(128)=-16.2$, $p<.001$, $d=1.4$, $BF>100$)
+
+```{r message=FALSE}
+#Statistical tests reported above
+localityDF <- ddply(df, ~id+context,plyr::summarize, avgDistance=mean(distance, na.rm=T))
+ttestPretty(subset(localityDF, context == 'Spatial')$avgDistance, subset(localityDF, context == 'Conceptual')$avgDistance, var.equal=T, paired=T)
+
+localityDF <- ddply(df, ~id+environment,plyr::summarize, avgDistance=mean(distance, na.rm=T))
+ttestPretty(subset(localityDF, environment == 'Smooth')$avgDistance, subset(localityDF, environment == 'Rough')$avgDistance, var.equal=T)
+
+localityDF <- ddply( df, ~id, plyr::summarize, avgDistance=mean(distance, na.rm=T))
+ttestPretty(na.omit(localityDF$avgDistance), mu = mean(randomDistanceDF$distance, na.rm=T))
+```
+
+
+Now let's classify these choices as either `Stay` (distance = 0), `Near` (distance = 1), or `Far` (distance >1).
+```{r}
+#choice prop
+localityDF <-ddply(df, ~id+trial+context,  plyr::summarize, avgDistance=mean(distance, na.rm=T))
+localityDF$distance <-localityDF$avgDistance
+randomDistanceDF$id <- 0
+randomDistanceDF$context <- 'Random'
+localityDF <- rbind(localityDF[,c( "context", "distance", 'id')], randomDistanceDF[,c( "context", "distance", 'id')])
+
+localityDF$choiceType <-ifelse(localityDF$distance==0, "Stay", ifelse(localityDF$distance==1, "Near", "Far"))
+localityDF$choiceType <- factor(localityDF$choiceType)
+
+choiceProp <- ddply(na.omit(localityDF),.(id,context), 
+                    function(x) with(x,
+                                     data.frame(table(choiceType)/length(choiceType),2)))
+
+choiceProp$choiceType <- factor(choiceProp$choiceType, levels=c("Stay", "Near", "Far"))
+
+
+p4 <- ggplot(na.omit(choiceProp), aes(x=choiceType, y = Freq*20, fill=context, color = context))+
+  stat_summary(fun.y = mean,geom='bar', position='dodge', color='black') +
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(width = 0.90), width = 0.2, color='black' ) +
+  #scale_y_continuous(labels=percent)+
+  scale_fill_manual(values=c("#1B9E77", "#D95F02", "Black"), name="") +
+  scale_color_manual(values=c("#1B9E77", "#D95F02", "Black"), name="") +
+  #scale_fill_rickandmorty()+
+  ylab('Choices Per Round ±SE')+
+  xlab("Choice Type")+
+  #facet_grid(~contextOrder)+
+  theme(legend.position= c(0.05, 1), legend.justification=c(0,1), strip.background=element_blank(), legend.key=element_rect(color=NA))
+p4
+
+```
+
+This seems to paint the same picture as the distance histograms before. Participants made more stay choices in the spatial task (`r ttestPretty(subset(choiceProp, context=="Conceptual" & choiceType =="Stay")$Freq, subset(choiceProp, context=="Spatial" & choiceType =="Stay")$Freq, var.equal = T, paired = T)`) and more far choices in the conceptual task (`r ttestPretty(subset(choiceProp, context=="Conceptual" & choiceType =="Far")$Freq, subset(choiceProp, context=="Spatial" & choiceType =="Far")$Freq, var.equal = T, paired = T)`). There were no differences in near choices (`r ttestPretty(subset(choiceProp, context=="Conceptual" & choiceType =="Near")$Freq, subset(choiceProp, context=="Spatial" & choiceType =="Near")$Freq, var.equal = T, paired = T)`).
+
+### Search Trajectories
+
+We have this really rich data about how participants navigated the search space. Let's first look at the number of steps participants took before making a selection
+```{r}
+df$steps <- sapply(df$trajectories, function(i) length(fromJSON(as.character(i))))
+trajDF <- df%>% group_by(id,context) %>% dplyr::summarize(avgSteps=mean(steps, na.rm=T))
+trajContextDF <- df%>% group_by(id,context) %>% dplyr::summarize(avgSteps=mean(steps, na.rm=T))
+traEnvjDF <- df%>% group_by(id,environment) %>% dplyr::summarize(avgSteps=mean(steps, na.rm=T))
+
+levels(df$contextOrder)<- c("Spatial First", "Conceptual First")
+#comparing context
+ggplot(df, aes(x = context, y = steps, fill = context))+
+  stat_summary(fun.y = mean, geom = "bar", position = "dodge", color='black') + 
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(width = 0.90), width = 0.2, color = 'black' ) +
+  theme(legend.position='right', strip.background=element_blank(), legend.key=element_rect(color=NA), legend.background=element_blank(), text = element_text(size=16,  family="sans"))+
+  #coord_cartesian(ylim=c(0,8)) +
+  xlab("")+
+  scale_fill_brewer(palette = "Dark2", name="") +
+  facet_grid(~contextOrder)+
+  ylab("Mean Number of Steps \u00B1SE")
+
+
+medians <- df%>% group_by(environment,context) %>% dplyr::summarize(steps=mean(steps, na.rm=T))
+contextLabels <- c('Conceptual' = 'Conceptual\nTask', 'Spatial' = 'Spatial\nTask', "Rough"="Rough", "Smooth"="Smooth")
+trajectoryplot <- ggplot(na.omit(df), aes(x=steps, fill = context, color = context)) + 
+  geom_histogram(aes(y = ..density..*20), position = 'dodge', binwidth=1, color='black')+
+  #stat_density(data = as.data.frame(randomDF), aes(value),geom="line",color='black', size = .8, linetype='dashed') +
+  #geom_density(fill=NA, size = 0.7) +
+  scale_fill_manual(values=c("#1B9E77", "#D95F02", "Black"), name="") +
+  scale_color_manual(values = c("#1B9E77", "#D95F02", "Black"), name="") +
+  geom_vline(data = medians, aes(xintercept = steps), linetype = 'dashed', size =.7)+
+  ylab("Choices Per Round") +
+  xlab("Trajectory Length") +
+  #xlim(0,6)+
+  facet_grid(context~environment, labeller = as_labeller(contextLabels))+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,20))+
+  scale_y_continuous(breaks = seq(0, 3, by = 1))+
+  #ggtitle("Locality of Sampling") +
+  theme(legend.position='none', strip.background=element_blank(), legend.key=element_rect(color=NA))
+trajectoryplot
+
+```
+Participants had longer trajectories in the contextual task ($t(128)=-10.7$, $p<.001$, $d=1.0$, $BF>100$), although there were no differences across environments ($t(127)=1.3$, $p=.213$, $d=0.2$, $BF=.38$). 
+
+
+```{r message=F}
+ttestPretty(subset(trajContextDF, context == 'Spatial')$avgSteps, subset(trajContextDF, context == 'Conceptual')$avgSteps, var.equal=T, paired=T)
+ttestPretty(subset(traEnvjDF, environment == 'Smooth')$avgSteps, subset(traEnvjDF, environment == 'Rough')$avgSteps, var.equal=T)
+```
+
+We can also compute the efficiency of their trajectories based on $\text{efficiency} = \frac{\text{Manhattan Distance from start to selection}}{\text{Steps taken}}$
+
+```{r}
+efficencyDF <- ddply(df, ~id+context, plyr::summarize, efficiency = mean(movement/steps))
+
+
+efficiencyPlot <- ggplot(efficencyDF, aes(x = context, y = efficiency, color = context, fill = context))+
+  geom_boxplot(fill=NA, color = 'black', width = .2, outlier.shape = NA)+
+  geom_quasirandom(alpha = .7)+
+  stat_summary(fun.y = mean, geom = "point",color = 'black', fill=NA, shape =23, size = 3 ) +
+  #coord_cartesian(ylim=c(0,2)) +
+  xlab('')+
+  scale_fill_brewer(palette = "Dark2", name="") +
+  scale_color_brewer(palette = "Dark2", name="") +
+  theme( legend.position='none', strip.background=element_blank(), legend.background=element_blank(), legend.key=element_rect(color=NA))+
+  ylab("Efficiency \u00B1SE")
+efficiencyPlot
+```
+Participants are clearly less efficient in the conceptual task than the spatial task ( ttestPretty(subset(efficencyDF, context=='Conceptual')$efficiency, subset(efficencyDF, context=='Spatial')$efficiency, paired=T)).
+
+Now let's ask, what factors influence trajectories? Do longer trajectories obtain higher rewards? Yes they do ($r=.21$, $p<.001$, $BF>100$).
+```{r}
+#steps as a function of previous reward
+pTrajLengthReward <- ggplot(subset(df,steps<=20), aes(x =steps,  y = z, color = context, fill = context))+
+  #geom_smooth(fill=NA)+
+  stat_summary(fun.y = mean, geom = "point") + 
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar") +
+  coord_cartesian(xlim=c(0,20), ylim=c(0,100)) + #Tukey outlier criterion indicates outliers above 20; min(boxplot.stats(df$steps)$out)
+  #facet_grid(~environment)+
+  scale_fill_brewer(palette = "Dark2", name="Task") +
+  scale_color_brewer(palette = "Dark2", name="Task") +
+  theme(legend.position=c(1,0.1),legend.justification = c(1,0), strip.background=element_blank(), legend.background=element_blank(), legend.key=element_rect(color=NA))+
+  ylab("Reward Value ± 95% CI")+
+  xlab('Trajectory Length')
+pTrajLengthReward
+
+```
+
+
+We can also look at the entropy of each trajectory (computed over the distribution of directions moved). It seems like participants in the contextual task had higher entropy (consistent with larger step sizes and lower efficiency), and that lower entropy predicts higher reward.
+```{r}
+library(entropy)
+myent<-function(x){
+  return(entropy.empirical(table(x)))
+}
+df$trajEntropy <- sapply(df$trajectories, function(i)   myent(fromJSON(as.character(i))))
+
+ggplot(df, aes(x = context, y = trajEntropy, fill = context))+
+  stat_summary(fun.y = mean,geom='bar', position='dodge', color='black') +
+  stat_summary(fun.data = mean_se, geom = "errorbar", position = position_dodge(width = 0.90), width = 0.2, color='black' ) +
+  #scale_y_continuous(labels=percent)+
+  scale_fill_manual(values=c("#1B9E77", "#D95F02"), name="") +
+  scale_color_manual(values=c("#1B9E77", "#D95F02"), name="") +
+  facet_grid(~environment)
+  
+ggplot(subset(df, trajEntropy>0), aes(x = trajEntropy, y = z, color = context))+
+  geom_point(alpha = 0.05)+
+  geom_smooth(method = 'lm')+
+  #stat_summary(fun.y = mean, geom = "point") + 
+  #stat_summary(fun.data = mean_cl_boot, geom = "errorbar") +
+  xlab('Entropy')+ ylab('Reward Value')+
+  scale_fill_manual(values=c("#1B9E77", "#D95F02"), name="") +
+  scale_color_manual(values=c("#1B9E77", "#D95F02"), name="") +
+  facet_grid(~environment)
+  
+
+```
+
+How were both distance and trajectory length influenced by the *previous* reward value?
+```{r}
+#reward and distance
+#corTestPretty(na.omit(df)$distance, na.omit(df)$previousReward)
+p5 <- ggplot(na.omit(df), aes(x=distance, y = previousReward, color = context, fill=context)) +
+  #geom_count(alpha=0.2, show.legend = F, position = position_dodge(width=0.1))+
+  #scale_size_area(max_size = 5)+
+  #geom_jitter(alpha=0.05, size=0.5)+
+  #geom_smooth(method = "lm") +
+  stat_summary(fun.y = mean, geom = 'line', size=1)+
+  stat_summary(fun.data = mean_se, geom = 'ribbon', alpha = 0.7, color=NA) +
+  theme_classic() +
+  labs(y='Previous Reward Value', x = 'Distance Between Selections')+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 5))+
+  scale_color_brewer(palette = 'Dark2', name="Task")+
+  scale_fill_brewer( palette = 'Dark2', name="Task")+
+  #coord_flip()+
+  theme(legend.position=c(1,1), legend.justification = c(1,1), strip.background=element_blank(), legend.key=element_rect(color=NA), legend.background=element_blank())
+p5
+```
+It seems like participants move further away from their previous selection when the reward value was low ($r=-.66$, $p<.001$, $BF>100$), suggesting basic evidence of generalization behavior.
+
+Let's run a mixed model on these results
+
+```{r}
+#Mixed effects modeling
+distanceRewardMM <- run_model(brm(distance ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$distance)), cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceRewardMM')
+#bayes_R2(distanceRewardMM)
+#tab_model(distanceRewardMM) #Really slow!
+fixedTerms <- fixef(distanceRewardMM)#Look at fixed terms
+
+#Now generate predictions, removing id as a random effect
+xseq <- seq(0,100)
+newdat <-data.frame(context = rep(c("Conceptual","Spatial"), each=101), previousReward = rep(xseq,2))
+preds <- fitted(distanceRewardMM, re_formula = NA, newdata = newdat, probs = c(0.025, 0.975))
+#create new fixed effects dataframe
+fixedDF <- data.frame(context = rep(c("Conceptual","Spatial"), each=101), previousReward = rep(xseq,2),
+                      distance = preds[,1], lower = preds[,3], upper = preds[,4] )
+
+p5alt <- ggplot(subset(df, !is.na(df$distance)), aes(previousReward, distance, color = context, fill  = context)) +
+  #geom_hline(yintercept = mean(randomDistanceDF$distance, na.rm=T ), size = 1, color = 'black', linetype='dashed')+ 
+  geom_line(data = fixedDF,  size = 1)+ #GP is
+  geom_ribbon(data = fixedDF, aes(ymin=lower, ymax = upper), color = NA, alpha = 0.4 )+
+  stat_summary(fun.y=mean,geom='point', alpha = 0.8)+
+  #geom_abline(slope = 1, linetype = 'dashed')+
+  #coord_cartesian(xlim = c(0,100))+
+  xlim(c(0,100))+
+  theme_classic()+
+  scale_color_brewer(palette = 'Dark2', name="Task")+
+  scale_fill_brewer( palette = 'Dark2', name="Task")+
+  #facet_grid(~context, labeller = as_labeller(contextLabels) )+
+  xlab("Previous Reward Value")+
+  ylab("Distance Between Selections")+
+  annotate("text", x = 50, y = 8, label = "paste(italic(b)[prevReward] , \" = -0.06, 95% HPD: [-0.07, -0.06]\")", parse = TRUE)+
+  theme(legend.position=c(0, 0), legend.justification=c(0,0), strip.background=element_blank(), legend.key=element_blank(), legend.background=element_blank())
+p5alt
+
+```
+
+
+```{r}
+distanceInitialMM <- run_model(brm(movement ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$movement)), cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceInitialMM')
+#bayes_R2(distanceInitialMM)
+#tab_model(distanceInitialMM)
+fixedTerms <- fixef(distanceInitialMM)#Look at fixed terms
+
+#Now generate predictions, removing id as a random effect
+xseq <- seq(1,100)
+newdat <-data.frame(context = rep(c("Conceptual","Spatial"), each=100), previousReward = rep(xseq,2))
+preds <- fitted(distanceInitialMM, re_formula = NA, newdata = newdat, probs = c(0.025, 0.975))
+#create new fixed effects dataframe
+fixedDF <- data.frame(context = rep(c("Conceptual","Spatial"), each=100), previousReward = rep(xseq,2),
+                      movement = preds[,1], lower = preds[,3], upper = preds[,4] )
+
+p6 <- ggplot(subset(df, !is.na(df$movement)), aes(previousReward, movement, color = context, fill  = context)) +
+  geom_hline(yintercept = mean(randomDistanceDF$distance, na.rm=T ), size = 1, color = 'black', linetype='dashed')+ 
+  geom_line(data = fixedDF,  size = 1)+ #GP is
+  geom_ribbon(data = fixedDF, aes(ymin=lower, ymax = upper), color = NA, alpha = 0.4 )+
+  stat_summary(fun.y=mean,geom='point', alpha = 0.8)+
+  #geom_abline(slope = 1, linetype = 'dashed')+
+  #coord_cartesian(xlim = c(0,100))+
+  xlim(c(0,100))+
+  theme_classic()+
+  scale_color_brewer(palette = 'Dark2', name="Task")+
+  scale_fill_brewer( palette = 'Dark2', name="Task")+
+  #facet_grid(~context, labeller = as_labeller(contextLabels) )+
+  xlab("Previous Reward Value")+
+  ylab("Distance From Initial Position")+
+  annotate("text", x = 50, y = 8, label = "paste(italic(b)[prevReward] , \" = 0.02, 95% HPD: [0.01, 0.02]\")", parse = TRUE)+
+  theme(legend.position=c(0, 0.7), legend.justification=c(0,1), strip.background=element_blank(), legend.key=element_blank(), legend.background=element_blank())
+p6
+```
+At ther same time, participants also moved futher away from their initial starting point after observing larger reward values (`r corTestPretty(na.omit(df)$movement, na.omit(df)$previousReward)`). Note that the there was a random starting position at the beginning of each trial. So the starting point is not the same as the previous selection. A small distance from the initial starting point is indicative of random search behavior, utilizing the randomness of the initialization. The trend indicates that participants made a larger effort to search in a directed fashion after observing large reward values
+
+
+## Heatmap of clicks
+
+Let's look at any patterns in how people searched the input space. Unsurprisingly, there is a preference for corners and edges. Yellow is mapped to random chance, so orange and red are higher than chance, while green and blue are lower than chance.
+
+```{r}
+#Heatmap of clicks
+#spatial and spatial
+spatialCounts <- ddply(subset(df, context == 'Spatial'), .(x, y), nrow)
+names(spatialCounts) <- c("X", "Y", "Freq")
+spatialCounts$Prob <- spatialCounts$Freq / sum(spatialCounts$Freq)
+
+conceptCounts <- ddply(subset(df, context == 'Conceptual'), .(x, y), nrow)
+names(conceptCounts) <- c("X", "Y", "Freq")
+conceptCounts$Prob <- conceptCounts$Freq / sum(conceptCounts$Freq)
+
+maxFreq <- max(max(spatialCounts$Prob), max(conceptCounts$Prob))
+
+heatmapSpatial <- ggplot(spatialCounts, aes(x=X, y = Y, fill=Prob)) +
+  geom_tile()+
+  scale_fill_distiller(palette = "Spectral", name = 'Freq', values=rescale(c(0,1/64,maxFreq)),limits = c(0,maxFreq),labels = scales::percent_format(accuracy = 1))+
+  theme_classic() +
+  coord_equal() +
+  theme(strip.background=element_blank(), legend.key=element_rect(color=NA), axis.line=element_blank(),axis.text.x=element_blank(),
+        axis.text.y=element_blank(),axis.ticks=element_blank(), panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),plot.background=element_blank())+
+  ggtitle('Spatial Heatmap')
+heatmapSpatial
+
+conceptualHeatmap <- ggplot(conceptCounts, aes(x=X, y = Y, fill=Prob)) +
+  geom_tile()+
+  scale_fill_distiller(palette = "Spectral",name = 'Freq', values=rescale(c(0,1/64,maxFreq)), limits = c(0,maxFreq),labels = scales::percent_format(accuracy = 1))+
+  theme_classic() +
+  xlab('Rotation')+
+  ylab('Stripes')+
+  coord_equal() +
+  theme(strip.background=element_blank(), legend.key=element_rect(color=NA), axis.line=element_blank(),axis.text.x=element_blank(),
+        axis.text.y=element_blank(),axis.ticks=element_blank(), panel.background=element_blank(),panel.border=element_blank(),panel.grid.major=element_blank(),
+        panel.grid.minor=element_blank(),plot.background=element_blank())+
+  ggtitle('Conceptual Heatmap')
+conceptualHeatmap
+
+```
+
+## Reaction times
+
+We can also analyze participant reaction times. Participants were slower in the conceptual task (`r tfDF <- ddply(df, ~id+context+environment, plyr::summarize, ts = mean(ts))
+ttestPretty(log(subset(tfDF, context == 'Conceptual')$ts), log(subset(tfDF, context == 'Spatial')$ts), paired=T)`), but there were no differences across environments (`r tfDF <- ddply(df, ~id+context+environment, plyr::summarize, ts = mean(ts))
+ttestPretty(log(subset(tfDF, environment == 'Smooth')$ts), log(subset(tfDF, environment == 'Rough')$ts))`).
+
+
+
+```{r}
+#Individual participant quartile splits
+df$prevRewardValue <- NA
+for (pid in unique(df$id)){
+  subd <- subset(df, id==pid)
+  xs <- quantile(subd$previousReward, probs=0:4/4, na.rm = T)
+  df[df$id==pid,'prevRewardValue'] <- cut(subd$previousReward, breaks=xs,labels=c("Q1", "Q2", "Q3", "Q4") )
+}
+
+df$prevRewardValue <- factor(df$prevRewardValue)
+levels(df$prevRewardValue) <- c("Q1", "Q2", "Q3", "Q4")
+colfunc<-colorRampPalette(c("#0D0887FF", "#CC4678FF", "#F0F921FF"))
+p11 <- ggplot(subset(df, ts>0 & !is.na(prevRewardValue)), aes(x=ts/1000, y=prevRewardValue, fill = prevRewardValue))+
+  geom_density_ridges()+
+  xlab('RT in seconds (log scale)')+
+  scale_color_manual(values = colfunc(5), name="")+
+  scale_fill_manual(values = colfunc(5), name="")+
+  scale_x_log10()+
+  annotation_logticks(sides='b')+
+  facet_grid(~context, labeller = as_labeller(contextLabels))+
+  coord_cartesian(xlim = c(0.1,50))+
+  theme_classic()+
+  scale_y_discrete(expand = c(0.01, 0))+
+  theme(legend.position='none', strip.background=element_blank(), legend.key=element_rect(color=NA))+
+  ylab('Previous Reward')
+p11
+```
+
+There doesn't seem to be any connection between reaction time and previous reward value. It seems like any influence of deliberation on reaction time is likely washed out by larger influence of trajectory length.
+
+```{r}
+ggplot(subset(df,steps<=20), aes(x =steps,  y = log(ts/1000), color = context, fill = context))+
+  #geom_smooth(fill=NA)+
+  stat_summary(fun.y = mean, geom = "point") + 
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar") +
+  #coord_cartesian(xlim=c(0,20), ylim=c(4,10)) + #Tukey outlier criterion indicates outliers above 20; min(boxplot.stats(df$steps)$out)
+  #facet_grid(~environment)+
+  scale_fill_brewer(palette = "Dark2", name="Task") +
+  scale_color_brewer(palette = "Dark2", name="Task") +
+  theme(legend.position=c(0.05,1),legend.justification = c(0,1), strip.background=element_blank(), legend.background=element_blank(), legend.key=element_rect(color=NA))+
+  ylab("RT in seconds (log scale)")+
+  xlab('Trajectory Length')+
+  scale_y_log10()+
+  annotation_logticks(sides='l')
+
+```
+
+# Final Plots
+## Main text
+
+```{r fig.height = 7, fig.width = 9}
+#completeplot <- plot_grid(p3a, p1b, p4alt, trajectoryplot, pGeneralization, p5,conceptualHeatmap, heatmapSpatial , ncol=2, labels = "auto")
+completeplot <- cowplot::plot_grid(p1a, p1b, pOrder ,p3a,  p4alt, p5alt, ncol=2, labels = "auto")
+completeplot
+
+ggsave('plots/behavioralplot.pdf',completeplot, width = 10, height = 8, unit='in', useDingbats=F)
+```
+## SI
+
+```{r fig.width = 12, fig.height = 4}
+
+#SI plots
+trainingRound <- cowplot::plot_grid(trajComplete, trajp1a, trajheatmap, pError,  ncol=2, labels = 'auto')
+trainingRound
+ggsave(filename = 'plots/TrainingPlots.pdf', trainingRound, width = 9,height = 6, units = 'in', useDingbats=FALSE)
+
+
+```
+
+```{r fig.width = 12, fig.height = 4}
+trajectoryPlots <- cowplot::plot_grid(trajectoryplot, pTrajLengthReward, p6,  ncol=3, labels="auto")
+trajectoryPlots
+ggsave(filename = 'plots/TrajectoryPlots.pdf', trajectoryPlots, width = 12,height = 4, units = 'in', useDingbats=FALSE)
+
+
+```
+
+```{r fig.width = 8, fig.height = 4}
+
+heatmaps <- cowplot::plot_grid(conceptualHeatmap, heatmapSpatial, labels = "auto")
+heatmaps
+ggsave(filename = 'plots/heatmaps.pdf', heatmaps, width = 8,height = 4, units = 'in', useDingbats=FALSE)
+```
+

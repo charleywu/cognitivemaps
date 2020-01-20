@@ -1,0 +1,576 @@
+---
+title: "Bonus Round"
+output:
+  html_document:
+    df_print: paged
+    toc: yes
+  html_notebook:
+    toc: yes
+bibliography: references.bib
+---
+
+Now let's look at the bonus round data.
+
+```{r message=FALSE}
+#house keeping
+rm(list=ls())
+
+#load packages
+packages <- c('broom', 'dplyr', 'modelr','jsonlite', 'effects', 'scales', 'xtable', 'shinystan', 'ggplot2', 'ggExtra', 'sjPlot', 'tidybayes', 'cowplot',  'brms','sjPlot', 'plyr', 'lme4',  'ggbeeswarm', 'gridExtra', 'reshape2', 'stargazer', 'coefplot', "grid", 'matrixcalc', 'parallel', 'ggsignif')
+invisible(lapply(packages, require, character.only = TRUE))
+
+source("models.R")
+#Participant data
+source('dataProcessing.R')
+source('statisticalTests.R')
+
+bmtCol <- "#F0E442"
+gpCol <- "#D55E00"
+
+theme_set(theme_cowplot(font_size=12))
+d <- dataImport() #participant data
+
+
+#load environments from json, unlist, transform into numeric, convert into matrix, and name dimensions
+roughEnvironments <- lapply(fromJSON("../experiment3/roughEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64), c('x1', 'x2', 'y'))))
+smoothEnvironments <- lapply(fromJSON("../experiment3/smoothEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64),  c('x1', 'x2', 'y'))))
+
+#parameter estimates
+bmtPars <-  read.csv('rationalModels/parameters/BMT.csv')
+gpPars <- read.csv('rationalModels/parameters/gpucb.csv')
+simKernelPars <- read.csv('rationalModels/parameters/simKernelucb.csv')
+
+theme_set(theme_cowplot(font_size=12))
+
+#Wrapper for brm models such that it saves the full model the first time it is run, otherwise it loads it from disk
+run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
+  path <- paste0(path,'/', modelName, ".brm")
+  if (reuse) {
+    fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
+  }
+  if (is(fit, "try-error")) {
+    fit <- eval(expr)
+    saveRDS(fit, file = path)
+  }
+  fit
+}
+```
+
+
+# Bonus round data
+
+```{r}
+#Load data
+dataFile <- "experimentData/full.csv" 
+rawdata <- read.csv(dataFile, sep=",")
+#remove empty rows#remove empty rows
+rawdata <- rawdata[!grepl("NULL",rawdata$grid_assignmentID) & !grepl("NULL",rawdata$gabor_assignmentID),] #Todo: replace this with a more sophisticated way to check that both parts were completed
+#extract sampleSize, records, and dat (deeply nested json data)
+sampleSize <-nrow(rawdata)
+all_opts = expand.grid(0:gridSize_0, 0:gridSize_0)
+#build dataframe
+bonusDF <- data.frame() 
+
+#Loop through data and build df
+for (i in 1:sampleSize){
+  dat <- rawdata[i,]
+  subjd <- subset(d, id==dat$id & round == 10 & trial <=15)
+  #GRID BONUS
+  #judgments
+  gridBonus <- fromJSON(as.character(dat$grid_experimentData))$bonusCollect
+  gridJudgments <- data.frame(gridBonus$bonusStimuli)
+  #Choice
+  gridJudgments$chosen <- FALSE #Create new column
+  gridChosen <- gridBonus$finalSelection
+  gridJudgments[gridJudgments$x == gridChosen[1] & gridJudgments$y == gridChosen[2],]$chosen <- TRUE #assign chosen to final choice
+  #Which environment?
+  gridJudgments$BonusEnvironment <- fromJSON(as.character(dat$grid_experimentData))$envOrder[10]
+  #Which rescaling factor?
+  gridJudgments$RescaleFactor<-  fromJSON(as.character(dat$grid_experimentData))$scaleCollect[10]
+  #Distance to the next closest option
+  gridsubjd <- subset(subjd, context == 'Spatial')
+  manhattanDistance <- sapply(gridJudgments$x, function(x) abs(gridsubjd$x - x)) + sapply(gridJudgments$y, function(y) abs(gridsubjd$y - y)) #calculate manhattan distance to all other observed options that round
+  gridJudgments$minDistance <- apply(manhattanDistance, 2, min) #min distance to nearest
+  #which context?
+  gridJudgments$context <- "Spatial"
+  
+  
+  #GABOR BONUS
+  #judgments#judgments
+  gaborBonus <- fromJSON(as.character(dat$gabor_experimentData))$bonusCollect
+  gaborJudgments <- data.frame(gaborBonus$bonusStimuli)
+  #Choice
+  gaborJudgments$chosen <- FALSE #Create new column
+  gaborChosen <- gaborBonus$finalSelection
+  gaborJudgments[gaborJudgments$x == gaborChosen[1] & gaborJudgments$y == gaborChosen[2],]$chosen <- TRUE #assign chosen to final choice
+  #Which environment?
+  gaborJudgments$BonusEnvironment <- fromJSON(as.character(dat$gabor_experimentData))$envOrder[10]
+  #Which rescaling factor?
+  gaborJudgments$RescaleFactor<-  fromJSON(as.character(dat$gabor_experimentData))$scaleCollect[10]
+  #Distance to the next closest option
+  gaborsubjd <- subset(subjd, context == 'Conceptual')
+  manhattanDistance <- sapply(gaborJudgments$x, function(x) abs(gaborsubjd$x - x)) + sapply(gaborJudgments$y, function(y) abs(gaborsubjd$y - y)) #calculate manhattan distance to all other observed options that round
+  gaborJudgments$minDistance <- apply(manhattanDistance, 2, min) #min distance to nearest
+  #which context?
+  gaborJudgments$context <- "Conceptual"
+  
+  #general data
+  dummy <- rbind(gridJudgments, gaborJudgments)
+  dummy$id <- dat$id
+  dummy$contextOrder <- dat$contextOrder
+  dummy$environment <- ifelse(dat$environment==0, "Rough", "Smooth")
+  
+  #calculate true underlying value
+  if (dummy$environment[1] == 'Rough'){
+    gridenv <- roughEnvironments[[gridJudgments$BonusEnvironment[1]+1]] #convert to base 1 numbers
+    gaborenv <- roughEnvironments[[gaborJudgments$BonusEnvironment[1]+1]]
+  }else if (dummy$environment[1] == 'Smooth'){
+    gridenv <- smoothEnvironments[[gridJudgments$BonusEnvironment[1]+1]]
+    gaborenv <- smoothEnvironments[[gaborJudgments$BonusEnvironment[1]+1]]
+  }
+  #Convert 2D feature values to stimuli index
+  gridBonusItems <- as.numeric(apply(subset(dummy, context=='Spatial')[,c('x', 'y')],MARGIN=1, FUN=function(row) which(row[1]==all_opts$Var1 & row[2]==all_opts$Var2)))
+  gaborBonusItems <- as.numeric(apply(subset(dummy, context=='Conceptual')[,c('x', 'y')],MARGIN=1, FUN=function(row) which(row[1]==all_opts$Var1 & row[2]==all_opts$Var2))) 
+  #now extract the true underlying values and apply rescaling
+  gridBonusTrueValues <- gridenv[gridBonusItems,'y'] * gridJudgments$RescaleFactor[1] + 5
+  gaborBonusTrueValues <- gaborenv[gaborBonusItems,'y'] * gaborJudgments$RescaleFactor[1] + 5
+  #Now put them in
+  dummy$trueValue <- c(gridBonusTrueValues, gaborBonusTrueValues)
+  #bind together
+  bonusDF<-rbind(bonusDF, dummy)
+}
+
+#factors
+bonusDF$environment <- factor(bonusDF$environment)
+bonusDF$context <- factor(bonusDF$context)
+bonusDF$judgmentError <- bonusDF$trueValue - bonusDF$givenValue
+bonusDF$absolutejudgmentError <- abs(bonusDF$judgmentError)
+#rescale given value back to range 0-100
+bonusDF$meanEstimate <- bonusDF$givenValue/100 * bonusDF$RescaleFactor + 5
+
+#summary(bonusDF)
+
+```
+## Behavioral results
+
+### How accurate were judgments relative to the ground truth?
+
+```{r}
+#Prediction error compared to ground truth
+indBonusDF <- ddply(bonusDF, ~id+context, plyr::summarize, MAE = mean(absolutejudgmentError))
+randomError <- mean(abs(sample(bonusDF$trueValue, size = 10000, replace=T) - runif(10000,1,100))) #Simulate random error
+contextLabels <- contextLabels <- c('Conceptual' = 'Conceptual Task', 'Spatial' = 'Spatial Task')
+
+p1 <- ggplot(indBonusDF, aes(x = context, y = MAE, color = context))+
+  geom_hline(yintercept = randomError, linetype = 'dashed')+
+  geom_line(aes(group=id), color = 'black', alpha = 0.1)+
+  geom_quasirandom(alpha = 0.7)+
+  geom_boxplot(outlier.shape=NA, fill=NA, color = 'black', width = .2)+
+  stat_summary(fun.y=mean, geom='point', color = 'black', shape = 5, size = 2)+
+  scale_color_brewer(palette = 'Dark2')+
+  xlab('')+
+  coord_cartesian(ylim=c(0,70))+
+  geom_signif(comparison=list(c('Conceptual', 'Spatial')), color = 'black', annotations = c('BF=0.10'))+
+  ylab('Participant Error (MAE)')+
+  scale_x_discrete(label=c('Conceptual\nTask', 'Spatial\nTask'))+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+p1
+```
+
+In both tasks participants made equally accruate judgments (comparing mean absolute error: $t(128)=-0.2$, $p=.827$, $d=0.02$, $BF=.10$), which were far better than random chance (conceptual: $t(128)=-9.2$, $p<.001$, $d=0.8$, $BF>100$; spatial: $t(128)=-8.4$, $p<.001$, $d=0.7$, $BF>100$) and correlated between tasks ($r=.27$, $p=.002$, $BF=20$). Judgment errors were also correlated with bandit performance ($r=-.45$, $p<.001$, $BF>100$), such that participants who earned higher rewards in the bandit task had lower judgment errors on the bonus round.
+
+```{r eval=FALSE}
+#Comparison to chance
+ttestPretty(subset(indBonusDF, context=='Conceptual')$MAE, mu = randomError)
+ttestPretty(subset(indBonusDF, context=='Spatial')$MAE, mu = randomError)
+
+#Correlated error between tasks
+corTestPretty(subset(indBonusDF, context=='Conceptual')$MAE, subset(indBonusDF, context=='Spatial')$MAE)
+
+#Compare differences across tasks
+ttestPretty(subset(indBonusDF, context == 'Spatial')$MAE, subset(indBonusDF, context == 'Conceptual')$MAE, paired=T) 
+
+#correlating bandit performance with judgment performance
+corTestPretty(ddply(bonusDF, ~id, plyr::summarize, MAE = mean(absolutejudgmentError))$MAE, ddply(d, ~id, plyr::summarize, avgReward = mean(z))$avgReward)
+```
+
+And while judgment errors were unaffected by the distance of the target stimuli to the nearest observed reward in the conceptual task ($r=.02$, $p=.442$, $BF=.09$), we do find a slight relationship in the spatial task ($r=.09$, $p<.001$, $BF=20$), where closer targets had lower judgment errors.  
+```{r}
+#corTestPretty(subset(bonusDF, context == 'Conceptual')$minDistance, subset(bonusDF, context == 'Conceptual')$absolutejudgmentError)
+#corTestPretty(subset(bonusDF, context == 'Spatial')$minDistance, subset(bonusDF, context == 'Spatial')$absolutejudgmentError)
+
+upperlimit <- quantile(bonusDF$minDistance, .75) + 1.5 * IQR(bonusDF$minDistance) #upper limit for distance based on Tukey outlier criterion, so we don't start seeing trends at extreme distances that are not representative of the marginal distribution
+ggplot(bonusDF, aes(x = minDistance, y = absolutejudgmentError, color = context, fill = context))+
+  geom_hline(yintercept = randomError, linetype = 'dashed')+
+  stat_summary(fun.y = mean, geom='point', color = 'black')+
+  stat_summary(fun.data = mean_cl_boot, geom='errorbar', color = 'black')+
+  geom_smooth(method='lm')+
+  theme_classic()+
+  coord_cartesian(xlim = c(0,round(upperlimit)))+
+  scale_color_brewer(palette = 'Dark2')+
+  scale_fill_brewer(palette = 'Dark2')+
+  xlab('Manhattan Distance to Nearest Observation')+
+  ylab('Average Judgment Error')+
+  facet_grid(~context)+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+```
+
+### Confidence judgments
+
+```{r}
+#Compare overall confidence
+indConfDF <- ddply(bonusDF, ~id+context, plyr::summarize, conf = mean(howCertain))
+p2 <- ggplot(indConfDF, aes(x=context, y = conf,  color = context))+
+  geom_line(aes(group=id), color = 'black', alpha = 0.1)+
+  geom_quasirandom(alpha = 0.7)+
+  geom_boxplot(fill='NA', color='black', width = .2, outlier.shape=NA) +
+  #geom_dotplot(binaxis='y', stackdir='center', shape=16, color='black', alpha = 0.5, dotsize = 1.5 )+
+  stat_summary(fun.y=mean, geom='point', color = 'black', shape = 5, size = 2)+
+  #geom_line(aes(group=participant), color = 'black', alpha = 0.2)+
+  scale_color_brewer(palette='Dark2')+
+  ylab('Confidence')+
+  xlab('')+
+  scale_y_continuous(limits = c(1,12), breaks=c(3,6,9))+
+  geom_signif(comparison=list(c('Conceptual', 'Spatial')), color = 'black', annotations = c('BF=0.13'))+
+  scale_x_discrete(label=c('Conceptual\nTask', 'Spatial\nTask'))+
+  theme(legend.position="top")+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+p2
+```
+
+Participants were equally confident in both domains ($t(128)=-0.8$, $p=.452$, $d=0.04$, $BF=.13$), with correlated levels of confidence across tasks ($r=.79$, $p<.001$, $BF>100$) suggesting some participants were consistently more confident than others. There also appears to be somewhat of a Dunning-Krueger effect, where more confident people also had larger judgment errors ($r=.31$, $p<.001$, $BF=91$) and performed worse on the bandit task ($r=-.28$, $p=.001$, $BF=28$).
+
+```{r eval=FALSE}
+#Compare confidence judgments between tasks
+ttestPretty(subset(indConfDF, context=='Conceptual')$conf, subset(indConfDF, context=='Spatial')$conf, paired=T) 
+#correlation
+corTestPretty(subset(indConfDF, context=='Conceptual')$conf, subset(indConfDF, context=='Spatial')$conf)
+
+#Correlation to judgment accuracy
+corTestPretty(ddply(bonusDF, ~id, plyr::summarize, conf = mean(howCertain))$conf,ddply(bonusDF, ~id, plyr::summarize, MAE = mean(absolutejudgmentError))$MAE)
+
+#Correlation to bandit performance
+corTestPretty(ddply(bonusDF, ~id, plyr::summarize, conf = mean(howCertain))$conf, ddply(d, ~id, plyr::summarize, avgReward = mean(z))$avgReward)
+
+```
+Confidence judgments were not substantially affected by the minimum distance to the nearest observed reward (conceptual: $r=-.06$, $p=.038$, $BF=.56$; spatial: $r=-.01$, $p=.676$, $BF=.07$).
+
+```{r}
+#corTestPretty(subset(bonusDF, context == 'Conceptual')$minDistance, subset(bonusDF, context == 'Conceptual')$howCertain)
+#corTestPretty(subset(bonusDF, context == 'Spatial')$minDistance, subset(bonusDF, context == 'Spatial')$howCertain)
+
+ggplot(bonusDF, aes(x = minDistance, y = howCertain, color = context, fill = context))+
+  stat_summary(fun.y = mean, geom='point', color = 'black')+
+  stat_summary(fun.data = mean_cl_boot, geom='errorbar', color = 'black')+
+  geom_smooth(method='lm')+
+  theme_classic()+
+  coord_cartesian(xlim = c(0,round(upperlimit)))+
+  scale_color_brewer(palette = 'Dark2')+
+  scale_fill_brewer(palette = 'Dark2')+
+  xlab('Manhattan Distance to Nearest Observation')+
+  ylab('Confidence')+
+  facet_grid(~context)+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+```
+
+We get a weird affect where the highest confidence corresponds to the largest judgment errors
+```{r}
+#Median split by bandit task performance
+medianBonus <- median(d$bonus)
+topPerformers <- unique(d[d$bonus>medianBonus,]$id)
+bonusDF$performance <- 'Low Performance'
+bonusDF[bonusDF$id %in% topPerformers,]$performance <- 'High Performance'
+
+ggplot(bonusDF, aes(x = howCertain, y = absolutejudgmentError, color = context, fill = context))+
+  geom_hline(yintercept = randomError, linetype = 'dashed')+
+  stat_summary(fun.y = mean, geom='point', color = 'black')+
+  stat_summary(fun.data = mean_se, geom='errorbar', color = 'black')+
+  geom_smooth(method='lm')+
+  facet_grid(performance~context)+
+  scale_color_brewer(palette = 'Dark2')+
+  scale_fill_brewer(palette = 'Dark2')+
+  xlab('Confidence (Likert Scale)')+
+  ylab('Absolute Judgment Error')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+```
+
+However, when we run a mixed effects model on this data we don't get a reliable effect $\beta_{conf}=.46$; 95% HPD: $[-0.02,0.96]$
+
+```{r}
+#Mixed effects models
+confJudgments <- run_model(brm(absolutejudgmentError ~ howCertain+context+howCertain*context +(1+howCertain|id), data=bonusDF, cores=4,  control = list(adapt_delta = 0.99)), modelName = 'confJudgments')
+fixedTerms <- fixef(confJudgments)#Look at fixed terms
+bayes_R2(confJudgments) #R2
+
+#Now generate predictions, removing id as a random effect
+xseq <- seq(1,11)
+newdat <-data.frame(context = rep(c("Conceptual","Spatial"), each=11), howCertain = rep(xseq,2))
+preds <- fitted(confJudgments, re_formula = NA, newdata = newdat, probs = c(0.025, 0.975))
+#create new fixed effects dataframe
+fixedDF <- data.frame( context = rep(c("Conceptual","Spatial"), each=11), howCertain = rep(xseq,2),
+                                   absolutejudgmentError = preds[,1], lower = preds[,3], upper = preds[,4] )
+
+
+
+ggplot(bonusDF, aes(x = howCertain, y = absolutejudgmentError, color = context, fill = context))+
+  geom_hline(yintercept = randomError, linetype = 'dashed')+
+  geom_beeswarm(alpha = 0.1, color = 'black')+
+  geom_line(data = fixedDF,  size = 1)+ #GP is
+  geom_ribbon(data = fixedDF, aes(ymin=lower, ymax = upper), color = NA, alpha = 0.4 )+
+  #stat_summary(fun.y = mean, geom='point', color = 'black')+
+  #stat_summary(fun.data = mean_se, geom='errorbar', color = 'black')+
+  #geom_smooth(method='lm')+
+  facet_grid(~context)+
+  scale_color_brewer(palette = 'Dark2')+
+  scale_fill_brewer(palette = 'Dark2')+
+  xlab('Confidence (Likert Scale)')+
+  ylab('Absolute Judgment Error')+
+  theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
+```
+
+```{r}
+tab_model(confJudgments)
+```
+
+# Model predictions
+
+Now using models with parameters estimated from the bandit tasks in rounds one to nine, we can perform out-of-task predictions for participant judgments about expected reward and confidence.
+
+```{r}
+
+#placeholders for model predictions
+bonusDF$GPmean<-NA
+bonusDF$GPuncertainty <- NA
+bonusDF$Simmean<-NA
+bonusDF$Simuncertainty <- NA
+bonusDF$BMTmean<-NA
+bonusDF$BMTuncertainty<-NA
+
+
+bonusRoundResults <- data.frame()
+#loop through subjects
+for (model in c("BMT","SimKernel", "GP")){
+  for (i in unique(d$id)){
+    #loop through context
+    for (contextType in c("Spatial", "Conceptual")){
+      observations <- subset(d, id==i & context == contextType & round==10 & trial<=15 ) #observation data
+      judgments <- subset(bonusDF, id == i & context == contextType) #judgments
+      
+      #parameters
+      if (model=="BMT"){
+        parameters <- bmtPars
+      }else if (model=='GP'){ #GP parameters depend on context
+        parameters <- gpPars
+      }else if (model=='SimKernel'){
+        parameters <- simKernelPars
+      }
+      params <- subset(parameters, participant == i & context == contextType) #parameter estimates
+      
+      #Load environment
+      envNum <- unique(judgments$BonusEnvironment) + 1 #convert to base_0 from base_1
+      environmentType <- unique(judgments$environment)
+      if (environmentType == "Smooth"){
+        bonusEnv <- data.frame(smoothEnvironments[[envNum]])
+      }else {
+        bonusEnv <- data.frame(roughEnvironments[[envNum]])
+      }
+      
+      #Compute model predictions
+      X <- as.matrix(observations[,c('x','y')]) #construct set of observations
+      Y <- observations$z 
+      
+      #Model Predictions
+      if (model=="BMT"){ #BMT
+        #parameters
+        kError <- median(params$kError)
+        beta <- median(params$beta)
+        tau <- median(params$tau)
+        
+        #learning phase
+        prevPost <- NULL
+        for (t in 1:15){
+          modelPredictions <- bayesianMeanTracker(x = X[t,], y = Y[t], prevPost = prevPost, theta = c(kError))
+          prevPost <- modelPredictions
+        }
+        
+      } else if (model=='GP'){ #GP
+        #parameters
+        lambda <- median(params$lambda)
+        beta <- median(params$beta)
+        tau <- median(params$tau)
+        
+        #Run GP
+        modelPredictions <- gpr(X.test = as.matrix(all_opts), theta = c(lambda, lambda, 1, .0001), X=X, Y=Y, k=rbf)
+      } else if (model=='SimKernel'){ #SimKernel
+        #parameters
+        lambda <- median(params$lambda)
+        beta <- median(params$beta)
+        tau <- median(params$tau)
+        p <- median(params$p)
+        
+        #Run GP
+        modelPredictions <- gpr(X.test = as.matrix(all_opts), theta = c(lambda, lambda, 1, .0001,p), X=X, Y=Y, k=shepardKernel)
+      }
+      
+      #Compare predictions to judgment
+      #mean judgment error in RMSE and MAE
+      location_index <- apply(as.matrix(judgments[,c('x','y')]),MARGIN=1, FUN=function(row) which(row[1]==all_opts$Var1 & row[2]==all_opts$Var2))
+      model_means <- (modelPredictions[location_index,]$mu + .5) * 100 #Rescale to range 0-100
+      rmse <- sqrt(mean((judgments$meanEstimate - model_means)^2))
+      mae <- mean(abs(judgments$meanEstimate - model_means))
+      #Add model means to bonusDF
+      if (model=="BMT"){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$BMTmean <- model_means
+      }else if (model=='GP'){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$GPmean <- model_means
+      }else if (model=='SimKernel'){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$Simmean <- model_means
+      }
+      
+      #Uncertainty
+      model_uncertainty <- modelPredictions[location_index,]$sig
+      #correlation <- cor.test(1/judgments$howCertain, model_uncertainty, method = "spearman")$estimate[[1]]
+      if (model=="BMT"){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$BMTuncertainty <- model_uncertainty
+      }else if (model=='GP'){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$GPuncertainty<- model_uncertainty
+      }else if (model=='SimKernel'){
+        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$Simuncertainty<- model_uncertainty
+      }
+      #choice prediction
+      utilities <- modelPredictions[location_index,]$mu + (beta*sqrt(model_uncertainty))
+      utilities <- utilities - max(utilities) #prevent overflow
+      choiceProb <- exp(utilities/tau)
+      choiceProb <- choiceProb/sum(choiceProb)
+      nLL <- -log(choiceProb[judgments$chosen])
+      #TODO add choice probability
+      #put it together
+      dummy <- data.frame(participant = i, context = contextType, environment = environmentType, modelName = model, MAE= mae,RMSE=rmse, nLL = nLL)
+      bonusRoundResults <- rbind(bonusRoundResults, dummy)
+    }
+  }
+}
+
+
+bonusRoundResults$modelName <- factor(bonusRoundResults$modelName, levels = c("GP", 'SimKernel', "BMT"))
+meanDF <- ddply(d, .(id, context, environment, contextOrder), plyr::summarize, meanScore = mean(z)) #compute mean scores
+bonusRoundResults <- merge(bonusRoundResults, meanDF, by.x=c("participant","context", "environment"), by.y=c("id", "context", "environment"))
+bonusRoundResults$contextOrder <- factor(bonusRoundResults$contextOrder)
+levels(bonusRoundResults$contextOrder)<- c("Spatial First", "Conceptual First")
+```
+
+## Model comparison
+
+Let's do a mixed effects regression, where we model `modelPrediction ~ humanPrediction + context + humanPrediction*context + (1 + humanPrediction | id)`. This model has an intercept term, a coefficient for the human predictions, a coefficient for context (with dummy coding for spatial = 1 and conceptual = 0), and the interaction between human predictions and the spatial context. In addition, this model has random intercepts for each participant and a random slope relative to the human prediction values. We then plot the posterior fixed effect as an estimate of how well the participant predictions match the model predictions, when we account for individual differences. 
+
+Note that this analysis is ommitted for the BMT, because since it invariably makes the same prediction for each unobserved option, this corresponds to a model with a slope of 0.
+```{r}
+
+#Normalization function to range 0-1 for use with GP uncertainty estimates (since the units are not so interpretable)
+predictionDF <- data.frame(id= rep(bonusDF$id, 2), humanPrediction = rep(bonusDF$meanEstimate, 2), 
+                           humanConfidence = rep(bonusDF$howCertain, 2), context = rep(bonusDF$context, 2),
+                           environment = rep(bonusDF$environment, 2), modelPrediction = c(bonusDF$GPmean, bonusDF$BMTmean), 
+                           modelUncertainty = c(bonusDF$GPuncertainty, bonusDF$BMTuncertainty),
+                           model = rep(c('GP', 'BMT'),each = nrow(bonusDF) ))
+
+
+predictionDF$model <- factor(predictionDF$model, level <- c('GP', 'BMT')) 
+
+
+#Mixed effects models
+GPjudgments <- run_model(brm(modelPrediction ~ humanPrediction+context+humanPrediction*context +(1+humanPrediction|id), data=subset(predictionDF, model=='GP'), cores=4,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusJudgments')
+bayes_R2(GPjudgments) #R2
+fixedTerms <- fixef(GPjudgments)#Look at fixed termsz 
+
+#Now generate predictions, removing id as a random effect
+xseq <- seq(1,100)
+newdat <-data.frame(context = rep(c("Conceptual","Spatial"), each=100), humanPrediction = rep(xseq,2))
+preds <- fitted(GPjudgments, re_formula = NA, newdata = newdat, probs = c(0.025, 0.975))
+#create new fixed effects dataframe
+fixedDF <- data.frame(model='GP', context = rep(c("Conceptual","Spatial"), each=100), humanPrediction = rep(xseq,2),
+                                   modelPrediction = preds[,1], lower = preds[,3], upper = preds[,4] )
+#create BMT df giving the same prediction for all options
+bmtDF <- data.frame(model='BMT', context = rep(c("Conceptual","Spatial"), each=100), humanPrediction = rep(xseq,2), modelPrediction = 50, lower = NA, upper = NA)
+fixedDF <- rbind(fixedDF, bmtDF)
+
+
+p4 <- ggplot(subset(predictionDF, model=='GP'), aes(humanPrediction, modelPrediction, color = model, fill  = model)) +
+  geom_point(alpha =.2, color = 'black', fill=NA) +
+  #geom_hline(yintercept = 50, size = 1, color = bmtCol)+ #BMT is a flat line
+  geom_line(data = fixedDF,  size = 1)+ #GP is
+  geom_ribbon(data = fixedDF, aes(ymin=lower, ymax = upper), color = NA, alpha = 0.4 )+
+  #geom_abline(slope = 1, linetype = 'dashed')+
+  coord_cartesian(xlim = c(0,100), ylim=c(0,100))+
+  theme_classic()+
+  scale_fill_manual(values = c(gpCol,bmtCol), name='')+
+  scale_color_manual(values = c(gpCol,bmtCol), name='')+
+  facet_grid(~context, labeller = as_labeller(contextLabels) )+
+  xlab("Participant Estimate")+
+  ylab("Model Estimate")+
+  theme(legend.position=c(0, 1.1), legend.justification=c(0,1), strip.background=element_blank(), legend.key=element_blank(), legend.background=element_blank())
+p4
+```
+
+
+We can also do a similar analysis for the relationshop between the model uncertainty predictions and confidence judgments with the formula `modelUncertainty ~ humanConfidence+context + humanConfidence *context + (1 + humanConfidence | id)`
+
+```{r}
+#Model uncertainty to participant confidence
+#Mixed effects model
+GPconf <- run_model(brm(modelUncertainty~ humanConfidence+context + humanConfidence*context +(1+humanConfidence|id), data=subset(predictionDF, model=='GP'), cores=4,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusconf')
+#bayes_R2(GPconf)
+#fixef(GPconf)
+
+#Compute rank-ordered confidence for plot
+confidenceDF <- data.frame()
+for (pid in unique(bonusDF$id)){
+  for (task in c('Conceptual', 'Spatial')){
+    for (model in c('GP')){
+      dsub <- subset(bonusDF, id == pid & context ==  task)
+      modelUncertainty = paste0(model,'uncertainty')
+      dummy <- data.frame(model = model,id=pid, rankParticipantConfidence= rank(dsub$howCertain), context = task, rankModelUncertainty = rank(dsub[,modelUncertainty]) )
+      confidenceDF <- rbind(dummy,confidenceDF)
+    }  
+  }
+}
+confidenceDF$context <- factor(confidenceDF$context , levels = c("Conceptual", "Spatial"))
+
+p5<- ggplot(confidenceDF, aes(x=rankParticipantConfidence, y = rankModelUncertainty,  color= model))+
+  #geom_quasirandom(varwidth = T, size = 0.5, alpha = 0.2) +
+  #geom_boxplot(width = .25,  outlier.shape = NA, alpha = 0.5, color = 'black') +
+  stat_summary(fun.y = mean, geom = "point", color = 'black') + 
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", color = 'black', width = 0)+
+  geom_smooth(fill = NA, method = 'lm',formula=y~x,  se=FALSE, fullrange=TRUE)+ 
+  #scale_fill_brewer(palette = "Spectral", name="Confidence") +
+  #scale_color_viridis(discrete=TRUE, direction = -1)+
+  #scale_fill_viridis(discrete=TRUE, direction = -1)+
+  #scale_y_continuous(limits = c(0,35))+
+  facet_grid(~context, labeller = as_labeller(contextLabels))+
+  #scale_x_continuous(limits = c(0.5,11.5), breaks =c(1,3,5,7,9,11))+
+  #ylab(expression(paste("GP Uncertainty (", sigma,")")))+
+  ylab(expression(paste("GP Uncertainty (rank order)")))+
+  xlab('Participant Confidence (rank order)')+
+  scale_color_manual(values = c(gpCol,bmtCol), name='')+
+  theme_classic() + theme(strip.background = element_blank(), legend.position=c(1,1.1), legend.justification=c(1,1))
+p5
+```
+
+```{r}
+#Bayesian R2
+bayes_R2(GPjudgments)
+bayes_R2(GPconf)
+
+
+#Default table
+tab_model(GPjudgments, GPconf)
+```
+
+# Sve plots
+```{r}
+p <- cowplot::plot_grid(p1,p2, p4,p5, ncol=2, labels = 'auto')
+p
+ggsave('plots/BonusRound.pdf',p, width = 10, height = 6, unit='in', useDingbats=F)
+```
+
