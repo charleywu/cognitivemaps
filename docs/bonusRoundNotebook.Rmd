@@ -4,6 +4,7 @@ output:
   html_document:
     df_print: paged
     toc: yes
+    code_folding: hide
   html_notebook:
     toc: yes
 bibliography: references.bib

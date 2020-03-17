@@ -4,6 +4,7 @@ output:
   html_document:
     df_print: paged
     toc: yes
+    code_folding: hide
   html_notebook:
     toc: yes
 ---
@@ -18,10 +19,10 @@ packages <- c('dplyr','cowplot', 'Rmisc', 'ggbeeswarm', 'brms',  'BayesFactor','
 invisible(lapply(packages, require, character.only = TRUE))
 
 theme_set(theme_cowplot(font_size=12))
-source('dataProcessing.R') 
-source('statisticalTests.R')
+source('../dataProcessing.R') 
+source('../statisticalTests.R')
 #Wrapper for brm models such that it saves the full model the first time it is run, otherwise it loads it from disk
-run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
+run_model <- function(expr, modelName, path='../brmsModels', reuse = TRUE) {
   path <- paste0(path,'/', modelName, ".brm")
   if (reuse) {
     fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
@@ -37,7 +38,7 @@ run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
 First, let's load the data. These data import functions are defined in `dataProcessing.R` where I convert the raw data into a usuable dataframe. 
 
 ```{r}
-dataDir <- 'experimentData/full.csv' #
+dataDir <- '../experimentData/full.csv' #
 df <- dataImport(dataFile = dataDir ,normalize=F) #These two functions are defined in `dataProcessing.R`
 trajDF <- importTrajData(dataFile = dataDir,normalize=F)
 #Trim last rounds
@@ -50,7 +51,6 @@ n_trials = 20 #per round
 
 ## Demographics
 ```{r echo = FALSE}
-
 
 #Total participants
 paste0('Participants: ', length(unique(df$id)))
@@ -179,7 +179,7 @@ spatialScores <- subset(meanDF, context == "Spatial")
 mergedDF <- merge(conceptualScores, spatialScores, by ="id")
 joinedDF <- rbind(conceptualScores, spatialScores)
 bothTasksDF <- ddply(joinedDF, .(id, environment, contextOrder), plyr::summarize, meanScore = mean(meanScore))
-randomDF <- read.csv("rationalModels/random.csv") #load random model
+randomDF <- read.csv("../rationalModels/random.csv") #load random model
 
 joinedDF$contextOrder <- factor(joinedDF$contextOrder)
 levels(joinedDF$contextOrder)<- c("Spatial First", "Conceptual First")
@@ -266,17 +266,24 @@ df$taskOrder <- ifelse((df$FirstTask=="Spatial First" & df$context == "Spatial")
 df$FirstTask <- factor(df$FirstTask, levels = c("Spatial First", "Conceptual First"))
 orderDF <- ddply(df, .(id, context, environment, FirstTask, taskOrder), plyr::summarize, meanScore = mean(z))
 
-pOrder <- ggplot(orderDF, aes(x = FirstTask, y = meanScore, fill = context))+
-  stat_summary(fun.y=mean, geom='bar', position = position_dodge(width = 1), color='black')+
-  stat_summary(fun.data = mean_cl_boot, geom='errorbar', color='black', position = position_dodge(width = 1), width = .2)+
+pOrder <- ggplot(orderDF, aes(x = interaction(context,FirstTask), y = meanScore, fill = context, color = context))+
+  geom_boxplot( color = 'black', position = position_dodge(width = 1), outlier.shape=NA, width = 0.2, alpha =0)+
+  geom_quasirandom(alpha = 0.7, dodge.width = 1)+
+  stat_summary(fun.y = mean, shape = 23, geom='point', size = 3, position = position_dodge(width = 1), color ='black', fill = NA)+
+  #stat_summary(fun.y=mean, geom='bar', position = position_dodge(width = 1), color='black')+
+  #stat_summary(fun.data = mean_cl_boot, geom='errorbar', color='black', position = position_dodge(width = 1), width = .2)+
   scale_fill_brewer(palette = 'Dark2', name= 'Task')+
-  coord_cartesian(ylim=c(0,110))+
-  scale_y_continuous(limits =c(0,110), expand = c(0, 0)) +
+  scale_color_brewer(palette = 'Dark2', name= 'Task')+
+  annotate('text', x = 1.5, y = 110, label='Spatial First')+
+  annotate('text', x = 3.5, y = 110, label='Conceptual First')+
+  scale_x_discrete(labels=c("Conceptual", "Spatial", "Conceptual", "Spatial"))+
+  geom_hline(yintercept = mean(randomDF$meanReward), color = 'black', linetype = 'dashed')+
+  #scale_y_continuous(limits =c(0,110), expand = c(0, 0)) +
   xlab('')+
   ylab('Mean Reward ±SE')+
-  geom_signif(y_position = c(88, 100),  xmin = c(0.8,1.2), xmax = c(1.8,2.2), annotation = c("BF=0.67","BF=6.4"))+
+  geom_signif(y_position = c(95, 103),  xmin = c(1,2), xmax = c(3,4), annotation = c("BF=6.4","BF=0.67"), color = 'black')+
   #theme(legend.position=c(0.05,1), legend.justification = c(0,1), legend.direction='horizontal')
-  theme(legend.position='right')
+  theme(legend.position='none')
 pOrder
 ```
 
@@ -288,7 +295,7 @@ corTestPretty(rdf$meanScore, rdf$round)`).
 ```{r}
 #Mean score over trial
 trialDF <- ddply(df, .(id, context, environment, trial), plyr::summarize, meanScore=mean(z))
-randomDF <- read.csv("rationalModels/random.csv") #load random model
+randomDF <- read.csv("../rationalModels/random.csv") #load random model
 
 p3a <- ggplot(trialDF, aes(x=trial, y = meanScore, color = context)) +
   stat_summary(fun.y = mean, geom = 'line')+
@@ -505,6 +512,31 @@ ttestPretty(subset(trajContextDF, context == 'Spatial')$avgSteps, subset(trajCon
 ttestPretty(subset(traEnvjDF, environment == 'Smooth')$avgSteps, subset(traEnvjDF, environment == 'Rough')$avgSteps, var.equal=T)
 ```
 
+Let's also look at the trajectories decomposed into the separate dimensions
+```{r}
+#compile total button pressess for each dimension
+df$trajLeft <- sapply(df$trajectories, function(i) sum(fromJSON(as.character(i)) == 37))
+df$trajUp <- sapply(df$trajectories, function(i) sum(fromJSON(as.character(i)) == 38))
+df$trajRight <- sapply(df$trajectories, function(i) sum(fromJSON(as.character(i)) == 39))
+df$trajDown <- sapply(df$trajectories, function(i) sum(fromJSON(as.character(i)) == 40))
+                      
+trajDirDF <- ddply(df, ~id+context+environment, plyr::summarize, left = sum(trajLeft)/sum(steps), up = sum(trajUp)/sum(steps), right = sum(trajRight)/sum(steps), down = sum(trajDown)/sum(steps)) #compute average per participant per trial
+trajDirDF <- trajDirDF  %>% gather(direction, p, left:down, factor_key=TRUE) #wide to long
+trajDirDF$direction <- factor(trajDirDF$direction, levels = c('left', 'right', 'up', 'down'))
+
+inputdir <- ggplot(trajDirDF, aes(x = direction, y = p, fill = context))+
+  stat_summary(fun.y = mean, geom = "bar", position = "dodge", color='black') + 
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", position = position_dodge(width = 0.90), width = 0.2, color = 'black' ) +
+  theme(legend.position='right', strip.background=element_blank(), legend.key=element_rect(color=NA), legend.background=element_blank(), text = element_text(size=16, family="sans"))+
+  #coord_cartesian(ylim=c(0,8)) +
+  xlab("Input")+
+  scale_fill_brewer(palette = "Dark2", name="") +
+  #facet_grid(~environment)+
+  ylab("Proportion of Inputs \u00B1 95% CI") +
+  theme(legend.position = c(0,1), legend.justification = c(0,1))
+inputdir
+```
+
 We can also compute the efficiency of their trajectories based on $\text{efficiency} = \frac{\text{Manhattan Distance from start to selection}}{\text{Steps taken}}$
 
 ```{r}
@@ -599,7 +631,14 @@ Let's run a mixed model on these results
 
 ```{r}
 #Mixed effects modeling
-distanceRewardMM <- run_model(brm(distance ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$distance)), cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceRewardMM')
+#Previous reward value and distance between selections
+distanceRewardMM <- run_model(brm(distance ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$distance)), 
+                                  family = student, 
+                                  prior = c(prior(normal(0, 10), class = Intercept),
+                                            prior(normal(0, 10), class = b),
+                                            prior(gamma(4, 1), class = nu),
+                                            prior(cauchy(0, 1),  class = sigma)),
+                                  cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceRewardMM')
 #bayes_R2(distanceRewardMM)
 #tab_model(distanceRewardMM) #Really slow!
 fixedTerms <- fixef(distanceRewardMM)#Look at fixed terms
@@ -634,7 +673,14 @@ p5alt
 
 
 ```{r}
-distanceInitialMM <- run_model(brm(movement ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$movement)), cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceInitialMM')
+
+distanceInitialMM <- run_model(brm(movement ~ previousReward+context+previousReward*context +(1+previousReward|id), data=subset(df, !is.na(df$movement)), 
+                                   family = student, 
+                                   prior = c(prior(normal(0, 10), class = Intercept),
+                                             prior(normal(0, 10), class = b),
+                                             prior(gamma(4, 1), class = nu),
+                                             prior(cauchy(0, 1),  class = sigma)),
+                                   cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'distanceInitialMM')
 #bayes_R2(distanceInitialMM)
 #tab_model(distanceInitialMM)
 fixedTerms <- fixef(distanceInitialMM)#Look at fixed terms
@@ -789,9 +835,9 @@ ggsave(filename = 'plots/TrainingPlots.pdf', trainingRound, width = 9,height = 6
 ```
 
 ```{r fig.width = 12, fig.height = 4}
-trajectoryPlots <- cowplot::plot_grid(trajectoryplot, pTrajLengthReward, p6,  ncol=3, labels="auto")
+trajectoryPlots <- cowplot::plot_grid(trajectoryplot, pTrajLengthReward,inputdir,  ncol=3, labels="auto")
 trajectoryPlots
-ggsave(filename = 'plots/TrajectoryPlots.pdf', trajectoryPlots, width = 12,height = 4, units = 'in', useDingbats=FALSE)
+ggsave(filename = '../plots/TrajectoryPlots.pdf', trajectoryPlots, width = 12,height = 4, units = 'in', useDingbats=FALSE)
 
 
 ```

@@ -4,6 +4,7 @@ output:
   html_document:
     df_print: paged
     toc: yes
+    code_folding: hide
   html_notebook:
     toc: yes
 bibliography: references.bib
@@ -16,27 +17,27 @@ Now let's model the data.
 rm(list=ls())
 
 #load packages
-packages <- c("coin", 'ggbeeswarm', 'pander', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'gridExtra', 'reshape2', 'stargazer', 'coefplot', "grid", 'corrplot', 'ggsignif')
+packages <- c("coin", 'ggbeeswarm', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'coefplot', "grid", 'corrplot', 'ggsignif')
 invisible(lapply(packages, require, character.only = TRUE))
 theme_set(theme_cowplot(font_size=12))
 
-source("dataProcessing.R") #For importing participant data
-source('statisticalTests.R') #For running statistical tests
+source("../dataProcessing.R") #For importing participant data
+source('../statisticalTests.R') #For running statistical tests
 #colors
 bmtCol <- "#F0E442"
 gpCol <- "#D55E00"
 shepardCol <- "#7570b3"
 #Participant data
-data<-dataImport(normalize = F)
+data<-dataImport(dataFile ='../experimentData/full.csv', normalize = F)
 uids <- unique(data$id)
 ```
 # Model Cross-Validation
 
-Model fitting is done in `modelComparisonCV.R`, which uses cross-validation to estimate model parameters and then makes out of sample predictions on the held-out test set. I use cluster computing to run a separate for each model x participant combination. The results are then saved in `modelResults/$batchName/` and we can load them up here. For simplicity, we can just load up the dataframe of these results (which have previously been produced in `modelplots.R`).
+Model fitting is done in `../modelComparisonCV.R`, which uses cross-validation to estimate model parameters and then makes out of sample predictions on the held-out test set. I use cluster computing to run a separate for each model x participant combination. The results are then saved in `../modelResults/$batchName/` and we can load them up here. For simplicity, we can just load up the dataframe of these results (which have previously been produced in `../modelplots.R`).
 
 ```{r}
-modelFit <- read.csv('modelResults/modelFit.csv')
-paramEstimates <- read.csv('modelResults/paramEstimates.csv') 
+modelFit <- read.csv('../modelResults/modelFit.csv')
+paramEstimates <- read.csv('../modelResults/paramEstimates.csv') 
 
 modelFit <- subset(modelFit, kernel %in%  c('RBF', 'BMT')) #models to include
 modelFit$kernel <- factor(modelFit$kernel, levels=c('RBF', 'BMT')) #reorder levels
@@ -51,7 +52,6 @@ Intuitively, $R^2=0$ is equivalent to random chance, while $R^2=1$ is a theoreti
 
 
 ```{r}
-
 contextLabels <- c("Conceptual"="Conceptual Task", "Spatial"="Spatial Task")
 p1 <- ggplot(modelFit, aes(x = interaction(kernel, context), y = R2, color = kernel))+
   geom_line(aes(group=interaction(participant, context)), color = 'black', alpha = 0.1)+
@@ -88,16 +88,16 @@ ttestPretty(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$R2, s
 We can also do a hierarchical Bayesian model comparison, where we compute the posterior probability (corrected for chance) of a given model being better than the other model [@stephan2009bayesian; @rigoux2014bayesian]. This is known as the _Protected Exceedence Probability_ ($pxp$). Let's first save the negative log likelihoods (`nLL`) from each model. These are the summed out-of-sample prediction errors for each model x participant combination, defined in terms of log loss.
 
 ```{r}
-write.table(cbind(subset(modelFit, context =='Conceptual' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Conceptual' & ModelName == 'BMT-UCB')$nLL), 'modelResults/conceptualdiffevidence.csv', row.names = FALSE, sep=',', col.names=FALSE)
-write.table(cbind(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Spatial' & ModelName == 'BMT-UCB')$nLL), 'modelResults/spatialdiffevidence.csv', row.names = FALSE, sep=',',col.names=FALSE)
+write.table(cbind(subset(modelFit, context =='Conceptual' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Conceptual' & ModelName == 'BMT-UCB')$nLL), '../modelResults/conceptualdiffevidence.csv', row.names = FALSE, sep=',', col.names=FALSE)
+write.table(cbind(subset(modelFit, context =='Spatial' & ModelName == 'RBF-UCB')$nLL, subset(modelFit, context =='Spatial' & ModelName == 'BMT-UCB')$nLL), '../modelResults/spatialdiffevidence.csv', row.names = FALSE, sep=',',col.names=FALSE)
 ```
 Now we run this using Matlab code written by Sam Gershman: https://github.com/sjgershm/mfit/blob/master/bms.m. In this repository, the file I run is `pxp.m`
 
 We now read in the output of this model comparison.
 
 ```{r}
-conceptualPXP <- as.numeric(read.csv('modelResults/conceptualPXP.csv', header=F))
-spatialPXP <- as.numeric(read.csv('modelResults/spatialPXP.csv', header=F))
+conceptualPXP <- as.numeric(read.csv('../modelResults/conceptualPXP.csv', header=F))
+spatialPXP <- as.numeric(read.csv('../modelResults/spatialPXP.csv', header=F))
 #build dataframe with output
 pxpDF <- data.frame(model= rep(c('GP', 'BMT'),2), context = c('Conceptual', 'Conceptual', 'Spatial','Spatial' ), pxp= c(conceptualPXP,spatialPXP ))
 #Reorder levels
@@ -221,13 +221,13 @@ ttestPretty(subset(modelFit, part == 'Task Two' & kernel == 'GP')$R2, subset(mod
 
 
 # Learning Curves
-Now let's simulate data based on our model estimates and see if they resemble human performance. Model simulations are performed in `modelSimulations.R` and can be run over night using multiple threads on a relatively powerful laptop.
+Now let's simulate data based on our model estimates and see if they resemble human performance. Model simulations are performed in `../modelSimulations.R` and can be run over night using multiple threads on a relatively powerful laptop.
 
 ```{r}
 # # Load all models
-randomDF <- read.csv("rationalModels/random.csv")
-bmtDF <- read.csv("rationalModels/BMTUCB.csv")
-gpDF <- read.csv("rationalModels/GPUCB.csv")
+randomDF <- read.csv("../rationalModels/random.csv")
+bmtDF <- read.csv("../rationalModels/BMTUCB.csv")
+gpDF <- read.csv("../rationalModels/GPUCB.csv")
 
 
 #Join all DFs together 
@@ -284,7 +284,38 @@ mean((subset(human, context == 'Conceptual')$meanReward - ddply(subset(rationalD
 
 
 ```
+Do we also replicate differences between environments in the GP simulated learning curves?
 
+```{r}
+
+ggplot(rationalDF ,aes(x = Model, y = meanReward, fill = Model, alpha = Environment) )+
+  stat_summary(fun.y = mean, geom= 'bar', position=position_dodge(), color = 'black')+
+  #facet_grid(~Environment)+
+  #facet_grid(Environment~ Context, labeller=as_labeller(taskEnvLabels)) +
+  ylab("Average Reward")+xlab("Model")+
+  theme_classic()+
+  scale_fill_manual(values=c("black",gpCol, bmtCol,"#fb9a99"))+
+  scale_alpha_manual(values = c(0.2,0.8))+
+  guides(fill = "none")+
+  theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+
+```
+
+What about between tasks?
+```{r}
+
+ggplot(rationalDF ,aes(x = Model, y = meanReward, fill = Model, alpha = Context) )+
+  stat_summary(fun.y = mean, geom= 'bar', position=position_dodge(), color = 'black')+
+  #facet_grid(~Environment)+
+  #facet_grid(Environment~ Context, labeller=as_labeller(taskEnvLabels)) +
+  ylab("Average Reward")+xlab("Model")+
+  theme_classic()+
+  scale_fill_manual(values=c("black",gpCol, bmtCol,"#fb9a99"))+
+  scale_alpha_manual(values = c(0.2,0.8))+
+  guides(fill = "none")+
+  theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
+```
 
 # Model Parameters
 
@@ -562,6 +593,14 @@ pTau
 # corTestPretty(subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$meanScore, subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$tau) #outiers removed
 ```
 
+### Relationships between parameters and predictive accuracy
+```{r}
+gpDF <- ddply(subset(paramEstimates, kernel=='RBF') , ~participant+environment+context+meanScore+R2, plyr::summarize, lambda = mean(lambda), beta = mean(beta), tau = mean(tau))
+library('GGally')
+  
+ggpairs(gpDF[,c('tau', 'R2', 'meanScore', 'context')], mapping = aes(color = context))
+```
+
 
 ## Bayesian Mean Tracker
 
@@ -727,8 +766,8 @@ When $\rho=2$, the Shepard kernel is equivalent to the RBF kernel. When $\rho<2$
 
 ```{r}
 #Reload models and not omit the shepard kernel thid time
-modelFit <- read.csv('modelResults/modelFit.csv')
-paramEstimates <- read.csv('modelResults/paramEstimates.csv') 
+modelFit <- read.csv('../modelResults/modelFit.csv')
+paramEstimates <- read.csv('../modelResults/paramEstimates.csv') 
 modelFit$kernel <- factor(modelFit$kernel, levels=c('RBF','SimKernel',  'BMT')) #reorder levels
 levels(modelFit$kernel) <- c('GP','Shepard', 'BMT') #rename levels
 paramEstimates$kernel <- factor(paramEstimates$kernel, levels=c('RBF','SimKernel',  'BMT')) #reorder levels
@@ -775,7 +814,7 @@ ggplot(pxpDF, aes(x = model, y = pxp, fill = model))+
 
 ```{r fig.height = 5, fig.width = 16}
 
-k<- 'Shepard'
+k<- 'Shepard' 
 a<- "UCB"
 conceptualDF<- subset(paramEstimates, kernel==k & acq==a & context=="Conceptual")
 conceptualParams <- ddply(conceptualDF, ~participant+environment+contextOrder, plyr::summarize, Conceptuallambda=mean(lambda), Conceptualbeta = mean(beta), Conceptualtau = mean(tau), Conceptualp = mean(p))
@@ -966,7 +1005,7 @@ corTestPretty(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upper
 TopRow <- cowplot::plot_grid(p1,p2, nrow =1, labels = 'auto')
 pModel <- cowplot::plot_grid(TopRow, p3, GPparameterPlots, ncol=1, labels = c("", "c", "d"))
 pModel
-ggsave('plots/ModelResults.pdf',pModel, width = 9, height = 8, unit='in', useDingbats=F)
+ggsave('../plots/ModelResults.pdf',pModel, width = 9, height = 8, unit='in', useDingbats=F)
 ```
 
 ## SI Plots
@@ -976,7 +1015,7 @@ Additional Model Results
 SImodels <- plot_grid(pAccuracyR2, pModelDiff, taskOrderP, nrow = 1, labels = 'auto')
 SImodels
 
-ggsave('plots/SImodels.pdf', SImodels, width = 9, height = 3, units = 'in')
+ggsave('../plots/SImodels.pdf', SImodels, width = 9, height = 3, units = 'in')
 ```
 Model paramers and performance
 
@@ -984,7 +1023,7 @@ Model paramers and performance
 paramPerf <- plot_grid(pLambda,pBeta, pTau, ncol = 3, labels = 'auto')
 paramPerf
 
-ggsave('plots/paramsPerf.pdf', paramPerf, width = 9, height = 5, units = 'in')
+ggsave('../plots/paramsPerf.pdf', paramPerf, width = 9, height = 5, units = 'in')
 ```
 
 
@@ -993,14 +1032,14 @@ Comparing exploration bonus and temperature
 ```{r}
 explorationComparison <- plot_grid(explorationConceptual, explorationSpatial, rel_widths = c(1,1.3),labels='auto')
 explorationComparison
-ggsave('plots/explorationComparison.pdf',explorationComparison, width = 7, height = 3, unit='in', useDingbats=F)
+ggsave('../plots/explorationComparison.pdf',explorationComparison, width = 7, height = 3, unit='in', useDingbats=F)
 ```
 
 Parameters of the BMT and Shepard Kernel models
 
 ```{r}
-ggsave('plots/BMTParams.pdf',BMTparameterPlots, width = 12, height = 4, unit='in', useDingbats=F)
-ggsave('plots/ShepardParams.pdf',shepardParamPlots, width = 16, height = 4, unit='in', useDingbats=F)
+ggsave('../plots/BMTParams.pdf',BMTparameterPlots, width = 12, height = 4, unit='in', useDingbats=F)
+ggsave('../plots/ShepardParams.pdf',shepardParamPlots, width = 16, height = 4, unit='in', useDingbats=F)
 ```
 
 

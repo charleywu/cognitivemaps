@@ -166,7 +166,9 @@ dataImport <- function(dataFile ="experimentData/full.csv", normalize=TRUE){
     dummy<-data.frame(id=rep(id, n), age=rep(age, n), gender=rep(gender, n), environment=rep(environment,n), contextOrder=rep(contextOrder,n), context=rep(c("Spatial", "Conceptual"), each=n/2), 
                       round=round, trial=trial, x=c(grid_x, gabor_x), y=c(grid_y, gabor_y), chosen=c(grid_chosen, gabor_chosen), initx = c(grid_initx, gabor_initx), inity = c(grid_inity, gabor_inity),
                       trajectories = c(grid_trajectories, gabor_trajectories), steps = c(grid_steps, gabor_steps), movement = c(gridMovement, gaborMovement),
-                      distance = c(gridDistance, gaborDistance), z=c(grid_z, gabor_z), zscaled=c(grid_zscaled, gabor_zscaled), previousReward=c(grid_previousz, gabor_previousz), 
+                      distance = c(gridDistance, gaborDistance), distance_x =c(as.vector(rbind(rep(NA,num_rounds),grid_delta_x)), as.vector(rbind(rep(NA,num_rounds),gabor_delta_x))), 
+                      distance_y =c(as.vector(rbind(rep(NA,num_rounds),grid_delta_y)), as.vector(rbind(rep(NA,num_rounds),gabor_delta_y))),
+                      z=c(grid_z, gabor_z), zscaled=c(grid_zscaled, gabor_zscaled), previousReward=c(grid_previousz, gabor_previousz), 
                       ts=c(grid_ts, gabor_ts), scale=rep(c(gridScale, gaborScale), each=num_trials), envOrder=c(gridEnvOrder, gaborEnvOrder), bonus = c(rep(gridBonus, num_rounds*num_trials), rep(gaborBonus, num_rounds*num_trials)), totalBonus = totalBonus,
                       trajCorrect = c(rep(gridTrajCorrect, n/2), rep(gaborTrajCorrect, n/2)), trajRMSE = c(rep(gridTrajRMSE,n/2), rep(gaborTrajRMSE, n/2)), trajAvgSteps = c(rep(gridTrajAvgSteps,n/2), rep(gaborTrajAvgSteps, n/2)),
                       grid_start = rep(grid_start,n), grid_end = rep(grid_end,n), grid_duration = rep(grid_duration,n),
@@ -216,6 +218,8 @@ importTrajData <- function(dataFile ="experimentData/full.csv", normalize=TRUE){
     gridtraj <-  gridHistory$trajCollect
     gridTrajError <- rowSums((gridtraj$targetcollect - gridtraj$selectioncollect)^2)
     gridTrajManhattanDistance <- rowSums(abs(gridtraj$targetcollect - gridtraj$selectioncollect))
+    gridTrajManhattanDistance_x <- abs(gridtraj$targetcollect[,1]- gridtraj$selectioncollect[,1]) #Separate X and Y components
+    gridTrajManhattanDistance_y <- abs(gridtraj$targetcollect[,2]- gridtraj$selectioncollect[,2])
     gridTrajCorrect <- gridTrajError==0
     gridTrajSteps <-  unlist(lapply(gridtraj$stepcollect, function(l) length(l)))
     gridX <- gridtraj$targetcollect[,1]
@@ -228,6 +232,8 @@ importTrajData <- function(dataFile ="experimentData/full.csv", normalize=TRUE){
     gabortraj <-  gaborHistory$trajCollect
     gaborTrajError <- rowSums((gabortraj$targetcollect - gabortraj$selectioncollect)^2)
     gaborTrajManhattanDistance <- rowSums(abs(gabortraj$targetcollect - gabortraj$selectioncollect))
+    gaborTrajManhattanDistance_x <- abs(gabortraj$targetcollect[,1]- gabortraj$selectioncollect[,1])
+    gaborTrajManhattanDistance_y <- abs(gabortraj$targetcollect[,2]- gabortraj$selectioncollect[,2])
     gaborTrajCorrect <- gaborTrajError==0
     gaborTrajSteps <-  unlist(lapply(gabortraj$stepcollect, function(l) length(l)))
     gaborX <- gabortraj$targetcollect[,1]
@@ -239,7 +245,10 @@ importTrajData <- function(dataFile ="experimentData/full.csv", normalize=TRUE){
     
     dummy<-data.frame(id=rep(id, n), age=rep(age, n), trial = trial, gender=rep(gender, n), environment=rep(environment,n), 
                       contextOrder=rep(contextOrder,n), context=c(rep("Spatial",length(gridTrajError)), rep("Conceptual", length(gaborTrajError))), 
-                      x = c(gridX, gaborX), y = c(gridY, gaborY),trajCorrect = c(gridTrajCorrect, gaborTrajCorrect),trajError = c(gridTrajError, gaborTrajError), manhattanError = c(gridTrajManhattanDistance, gaborTrajManhattanDistance),  trajSteps = c(gridTrajSteps, gaborTrajSteps))
+                      x = c(gridX, gaborX), y = c(gridY, gaborY),trajCorrect = c(gridTrajCorrect, gaborTrajCorrect),
+                      trajError = c(gridTrajError, gaborTrajError), manhattanError = c(gridTrajManhattanDistance, gaborTrajManhattanDistance),  
+                      manhattanError_x = c(gridTrajManhattanDistance_x, gaborTrajManhattanDistance_x), manhattanError_y = c(gridTrajManhattanDistance_y, gaborTrajManhattanDistance_y),
+                      trajSteps = c(gridTrajSteps, gaborTrajSteps))
     df<-rbind(df, dummy)
   }
   
