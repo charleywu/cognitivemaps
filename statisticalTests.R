@@ -5,6 +5,7 @@ library(lsr)
 ####################################################################################
 # Statistical Tests
 ####################################################################################
+#Standard t-test
 ttestPretty <-function(x,y=NULL,mu=0, var.equal=T, paired=F, maxBF = 100){
   if (!is.null(y)){ #two sample
     freq <- t.test(x,y, var.equal=var.equal, paired = paired)

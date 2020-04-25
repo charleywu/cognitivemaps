@@ -20,31 +20,31 @@ rm(list=ls())
 packages <- c('broom', 'dplyr', 'modelr','jsonlite', 'effects', 'scales', 'xtable', 'shinystan', 'ggplot2', 'ggExtra', 'sjPlot', 'tidybayes', 'cowplot',  'brms','sjPlot', 'plyr', 'lme4',  'ggbeeswarm', 'gridExtra', 'reshape2', 'stargazer', 'coefplot', "grid", 'matrixcalc', 'parallel', 'ggsignif')
 invisible(lapply(packages, require, character.only = TRUE))
 
-source("models.R")
+source("../models.R")
 #Participant data
-source('dataProcessing.R')
-source('statisticalTests.R')
+source('../dataProcessing.R')
+source('../statisticalTests.R')
 
 bmtCol <- "#F0E442"
 gpCol <- "#D55E00"
 
 theme_set(theme_cowplot(font_size=12))
-d <- dataImport() #participant data
+d <- dataImport('../experimentData/full.csv' ) #participant data
 
 
 #load environments from json, unlist, transform into numeric, convert into matrix, and name dimensions
-roughEnvironments <- lapply(fromJSON("../experiment3/roughEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64), c('x1', 'x2', 'y'))))
-smoothEnvironments <- lapply(fromJSON("../experiment3/smoothEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64),  c('x1', 'x2', 'y'))))
+roughEnvironments <- lapply(fromJSON("../experiment/roughEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64), c('x1', 'x2', 'y'))))
+smoothEnvironments <- lapply(fromJSON("../experiment/smoothEnvironment.json"), FUN=function(x) matrix(as.numeric(unlist(x)), ncol=3, byrow=TRUE, dimnames=list(seq(1,64),  c('x1', 'x2', 'y'))))
 
 #parameter estimates
-bmtPars <-  read.csv('rationalModels/parameters/BMT.csv')
-gpPars <- read.csv('rationalModels/parameters/gpucb.csv')
-simKernelPars <- read.csv('rationalModels/parameters/simKernelucb.csv')
+bmtPars <-  read.csv('../rationalModels/parameters/BMT.csv')
+gpPars <- read.csv('../rationalModels/parameters/gpucb.csv')
+
 
 theme_set(theme_cowplot(font_size=12))
 
 #Wrapper for brm models such that it saves the full model the first time it is run, otherwise it loads it from disk
-run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
+run_model <- function(expr, modelName, path='../brmsModels', reuse = TRUE) {
   path <- paste0(path,'/', modelName, ".brm")
   if (reuse) {
     fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
@@ -62,7 +62,7 @@ run_model <- function(expr, modelName, path='brmsModels', reuse = TRUE) {
 
 ```{r}
 #Load data
-dataFile <- "experimentData/full.csv" 
+dataFile <- "../experimentData/full.csv" 
 rawdata <- read.csv(dataFile, sep=",")
 #remove empty rows#remove empty rows
 rawdata <- rawdata[!grepl("NULL",rawdata$grid_assignmentID) & !grepl("NULL",rawdata$gabor_assignmentID),] #Todo: replace this with a more sophisticated way to check that both parts were completed
@@ -149,7 +149,7 @@ bonusDF$absolutejudgmentError <- abs(bonusDF$judgmentError)
 #rescale given value back to range 0-100
 bonusDF$meanEstimate <- bonusDF$givenValue/100 * bonusDF$RescaleFactor + 5
 
-#summary(bonusDF)
+saveRDS(bonusDF, "../experimentData/bonusRound.Rds")
 
 ```
 ## Behavioral results
@@ -275,7 +275,7 @@ ggplot(bonusDF, aes(x = minDistance, y = howCertain, color = context, fill = con
   theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
 ```
 
-We get a weird affect where the highest confidence corresponds to the largest judgment errors
+We get an affect where the highest confidence corresponds to the largest judgment errors
 ```{r}
 #Median split by bandit task performance
 medianBonus <- median(d$bonus)
@@ -297,13 +297,15 @@ ggplot(bonusDF, aes(x = howCertain, y = absolutejudgmentError, color = context, 
 
 ```
 
-However, when we run a mixed effects model on this data we don't get a reliable effect $\beta_{conf}=.46$; 95% HPD: $[-0.02,0.96]$
+This also holds when we run a mixed effects model, controlling for individual variability using participant id as a random intercept ($b_{conf}=.50$; 95% HPD: $[0.02,1.01]$)
 
 ```{r}
 #Mixed effects models
-confJudgments <- run_model(brm(absolutejudgmentError ~ howCertain+context+howCertain*context +(1+howCertain|id), data=bonusDF, cores=4,  control = list(adapt_delta = 0.99)), modelName = 'confJudgments')
+prior <- c(set_prior("normal(0,1)", class = "b"),set_prior("normal(0,1)", class = "sd"))
+confJudgments <- run_model(brm(absolutejudgmentError ~ 0+intercept + howCertain*context +(1+howCertain*context|id), family = student, data=bonusDF, cores=4,  control = list(adapt_delta = 0.99)), modelName = 'confJudgments')
 fixedTerms <- fixef(confJudgments)#Look at fixed terms
-bayes_R2(confJudgments) #R2
+fixedTerms
+#bayes_R2(confJudgments) #R2
 
 #Now generate predictions, removing id as a random effect
 xseq <- seq(1,11)
@@ -331,10 +333,6 @@ ggplot(bonusDF, aes(x = howCertain, y = absolutejudgmentError, color = context, 
   theme(legend.position="none", strip.background=element_blank(), legend.key=element_rect(color=NA))
 ```
 
-```{r}
-tab_model(confJudgments)
-```
-
 # Model predictions
 
 Now using models with parameters estimated from the bandit tasks in rounds one to nine, we can perform out-of-task predictions for participant judgments about expected reward and confidence.
@@ -344,15 +342,13 @@ Now using models with parameters estimated from the bandit tasks in rounds one t
 #placeholders for model predictions
 bonusDF$GPmean<-NA
 bonusDF$GPuncertainty <- NA
-bonusDF$Simmean<-NA
-bonusDF$Simuncertainty <- NA
 bonusDF$BMTmean<-NA
 bonusDF$BMTuncertainty<-NA
 
 
 bonusRoundResults <- data.frame()
 #loop through subjects
-for (model in c("BMT","SimKernel", "GP")){
+for (model in c("BMT", "GP")){
   for (i in unique(d$id)){
     #loop through context
     for (contextType in c("Spatial", "Conceptual")){
@@ -364,8 +360,6 @@ for (model in c("BMT","SimKernel", "GP")){
         parameters <- bmtPars
       }else if (model=='GP'){ #GP parameters depend on context
         parameters <- gpPars
-      }else if (model=='SimKernel'){
-        parameters <- simKernelPars
       }
       params <- subset(parameters, participant == i & context == contextType) #parameter estimates
       
@@ -426,8 +420,6 @@ for (model in c("BMT","SimKernel", "GP")){
         bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$BMTmean <- model_means
       }else if (model=='GP'){
         bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$GPmean <- model_means
-      }else if (model=='SimKernel'){
-        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$Simmean <- model_means
       }
       
       #Uncertainty
@@ -437,8 +429,6 @@ for (model in c("BMT","SimKernel", "GP")){
         bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$BMTuncertainty <- model_uncertainty
       }else if (model=='GP'){
         bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$GPuncertainty<- model_uncertainty
-      }else if (model=='SimKernel'){
-        bonusDF[bonusDF$id==i & bonusDF$context == contextType,]$Simuncertainty<- model_uncertainty
       }
       #choice prediction
       utilities <- modelPredictions[location_index,]$mu + (beta*sqrt(model_uncertainty))
@@ -455,11 +445,13 @@ for (model in c("BMT","SimKernel", "GP")){
 }
 
 
-bonusRoundResults$modelName <- factor(bonusRoundResults$modelName, levels = c("GP", 'SimKernel', "BMT"))
+bonusRoundResults$modelName <- factor(bonusRoundResults$modelName, levels = c("GP", "BMT"))
 meanDF <- ddply(d, .(id, context, environment, contextOrder), plyr::summarize, meanScore = mean(z)) #compute mean scores
 bonusRoundResults <- merge(bonusRoundResults, meanDF, by.x=c("participant","context", "environment"), by.y=c("id", "context", "environment"))
 bonusRoundResults$contextOrder <- factor(bonusRoundResults$contextOrder)
 levels(bonusRoundResults$contextOrder)<- c("Spatial First", "Conceptual First")
+
+saveRDS(bonusRoundResults, "../modelResults/bonusRoundResults.Rds")
 ```
 
 ## Model comparison
@@ -481,7 +473,10 @@ predictionDF$model <- factor(predictionDF$model, level <- c('GP', 'BMT'))
 
 
 #Mixed effects models
-GPjudgments <- run_model(brm(modelPrediction ~ humanPrediction+context+humanPrediction*context +(1+humanPrediction|id), data=subset(predictionDF, model=='GP'), cores=4,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusJudgments')
+prior <- c(set_prior("normal(0,1)", class = "b"),set_prior("normal(0,1)", class = "sd"))
+GPjudgments <- run_model(brm(modelPrediction ~ 0+ intercept+ humanPrediction+context+humanPrediction*context +(1+humanPrediction*context|id), data=subset(predictionDF, model=='GP'), 
+                             prior = prior, cores=4,  iter = 4000, warmup = 1000,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusJudgments')
+
 bayes_R2(GPjudgments) #R2
 fixedTerms <- fixef(GPjudgments)#Look at fixed termsz 
 
@@ -519,8 +514,9 @@ We can also do a similar analysis for the relationshop between the model uncerta
 
 ```{r}
 #Model uncertainty to participant confidence
-#Mixed effects model
-GPconf <- run_model(brm(modelUncertainty~ humanConfidence+context + humanConfidence*context +(1+humanConfidence|id), data=subset(predictionDF, model=='GP'), cores=4,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusconf')
+prior <- c(set_prior("normal(0,1)", class = "b"),set_prior("normal(0,1)", class = "sd"))
+GPconf <- run_model(brm(modelUncertainty~  0 + intercept + humanConfidence*context +(1+humanConfidence*context|id), data=subset(predictionDF, model=='GP'),
+                        prior = prior, cores=4,  iter = 4000, warmup = 1000,  control = list(adapt_delta = 0.99)), modelName = 'GPbonusconf')
 #bayes_R2(GPconf)
 #fixef(GPconf)
 
@@ -558,20 +554,10 @@ p5<- ggplot(confidenceDF, aes(x=rankParticipantConfidence, y = rankModelUncertai
 p5
 ```
 
-```{r}
-#Bayesian R2
-bayes_R2(GPjudgments)
-bayes_R2(GPconf)
-
-
-#Default table
-tab_model(GPjudgments, GPconf)
-```
-
-# Sve plots
+# Save plots
 ```{r}
 p <- cowplot::plot_grid(p1,p2, p4,p5, ncol=2, labels = 'auto')
 p
-ggsave('plots/BonusRound.pdf',p, width = 10, height = 6, unit='in', useDingbats=F)
+ggsave('../plots/BonusRound.pdf',p, width = 10, height = 6, unit='in', useDingbats=F)
 ```
 

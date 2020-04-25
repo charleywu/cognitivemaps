@@ -17,7 +17,7 @@ Now let's model the data.
 rm(list=ls())
 
 #load packages
-packages <- c("coin", 'ggbeeswarm', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'coefplot', "grid", 'corrplot', 'ggsignif')
+packages <- c("coin", 'ggbeeswarm', 'brms', 'sjPlot', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'coefplot', "grid", 'corrplot', 'ggsignif')
 invisible(lapply(packages, require, character.only = TRUE))
 theme_set(theme_cowplot(font_size=12))
 
@@ -30,6 +30,19 @@ shepardCol <- "#7570b3"
 #Participant data
 data<-dataImport(dataFile ='../experimentData/full.csv', normalize = F)
 uids <- unique(data$id)
+
+#Wrapper for brm models such that it saves the full model the first time it is run, otherwise it loads it from disk
+run_model <- function(expr, modelName, path='../brmsModels', reuse = TRUE) {
+  path <- paste0(path,'/', modelName, ".brm")
+  if (reuse) {
+    fit <- suppressWarnings(try(readRDS(path), silent = TRUE))
+  }
+  if (is(fit, "try-error")) {
+    fit <- eval(expr)
+    saveRDS(fit, file = path)
+  }
+  fit
+}
 ```
 # Model Cross-Validation
 
@@ -267,7 +280,7 @@ p3<- ggplot(rationalDF, aes(x=trial, y=meanReward, col=Model, shape=Model))+
   #scale_color_brewer(palette="Paired", direction=1)+
   #coord_cartesian(ylim=c(45,85))+
   scale_x_continuous(breaks = round(seq(0,20, by = 5),1))+
-  theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
+  theme(legend.position="top", strip.background=element_blank(), legend.key=element_rect(color=NA))
 p3
 ```
 
@@ -317,6 +330,25 @@ ggplot(rationalDF ,aes(x = Model, y = meanReward, fill = Model, alpha = Context)
   theme(legend.position="right", strip.background=element_blank(), legend.key=element_rect(color=NA))
 ```
 
+Let's do a 2x2 plot of both domain and task
+```{r}
+
+pSimBars <- ggplot(rationalDF ,aes(x = Model, y = meanReward, fill = Model, alpha =Context) )+
+  stat_summary(fun.y = mean, geom= 'bar', position=position_dodge(), color = 'black')+
+  #facet_grid(~Environment)+
+  #facet_grid(Environment~ Context, labeller=as_labeller(taskEnvLabels)) +
+  ylab("Average Reward")+xlab("Model")+
+  theme_classic()+
+  facet_grid(Environment~.)+
+  scale_fill_manual(values=c("black",gpCol, bmtCol,"#fb9a99"))+
+  scale_alpha_manual(values = c(0.2,1), name = 'Task')+
+  guides(fill = "none")+
+  theme(legend.position='top', strip.background=element_blank(), legend.key=element_rect(color=NA))
+
+pSimBars
+```
+
+
 # Model Parameters
 
 Now let's take a look at the model parameters and see what they tell us about how participants search across domains
@@ -354,7 +386,7 @@ p4a <- ggplot(subset(corDF,Conceptuallambda <= upperLimitLambda &  Spatiallambda
   scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
   scale_shape_manual(name="", values= c(17,16))+
   ggtitle('Generalization')+
-  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  #theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
   theme(title = element_text(family = 'sans'), legend.position='none', 
         legend.background = element_rect(fill='transparent'))
 p4a <- ggExtra::ggMarginal(p4a, type = "boxplot", fill='transparent', size = 10, outlier.shape = NA) #add marginal boxplots
@@ -377,7 +409,7 @@ p4b <- ggplot(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperL
   ggtitle('Exploration Bonus')+
   scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
   scale_shape_manual(name="", values= c(17,16))+
-  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  #theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
   theme(title = element_text(family = 'sans'), legend.position="None")
 p4b <- ggExtra::ggMarginal(p4b, type = "boxplot", fill='transparent', size=10)
 
@@ -399,7 +431,7 @@ p4c <- ggplot(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimi
   ggtitle('Temperature')+
   scale_color_manual(name="", values=c("#24325FFF", '#B7E4F9FF'))+ #environment
   scale_shape_manual(name="", values= c(17,16))+
-  theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
+  #theme(text = element_text(size=16,  family="sans"), plot.title = element_text(size=16))+
   theme(title = element_text(family = 'sans'),  legend.background = element_blank(), legend.position='right')
 leg <- get_legend(p4c) #extract legend
 p4c <- p4c + theme(legend.position = 'none')
@@ -412,19 +444,19 @@ GPparameterPlots
 
 Note that these plots use Tukey's outlier removal criterion to set the x and y axis limits (based on the larger of the two upper limits). This avoids some extreme values making it difficult to interpret the results.  The dashed line represents `y=x`. Highly correlated parameters should be close to this line, while strong differences between tasks correspond to points either above or below the line.
 
-I first report the results using non-parametric tests, comparing differences in parameter estimates using the Wilcoxon signed-rank test and correlations using Kendall's $\tau$. In addition, I have also applied Tukey's outlier removal criterion to the data and run standard $t$-tests and Pearson's correlation. We should expect robust effects to be found in both analyses
+We first report the results using non-parametric tests, comparing differences in parameter estimates using the Wilcoxon signed-rank test and correlations using Kendall's $\tau$. In addition, we report standard $t$-tests and Pearson's correlation after using a 20%-trimmed mean outlier removal criterion. We should expect robust effects to be found in both analyses.
 
 ### Generalization $\lambda$
-There is some ambiguity about whether lambda values differ (Wilcoxon signed-rank test: $Z=-1.2$, $p=.115$, $r=-.11$, $BF=.14$; but with outliers removed: $t(104)=-3.8$, $p<.001$, $d=0.4$, $BF=75$) and with correlated estimates  (`$r_{\tau}=.13$, $p=.028$, $BF=1.3$; without outliers: $r=.30$, $p=.002$, $BF=22$).
+We find no difference between lambda values (Wilcoxon signed-rank test: $Z=-1.2$, $p=.115$, $r=-.11$, $BF=.14$), which were weakly correlated  (`$r_{\tau}=.13$, $p=.028$, $BF=1.3$).
 
 ### Exploration bonus $\beta$
-We find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.0$, $p<.001$, $r=-.44$, $BF>100$; without outliers: $t(116)=-6.6$, $p<.001$, $d=0.8$, $BF>100$). These estimates are somewhat correlated between the two tasks ($r_{\tau}=.18$, $p=.002$, $BF=13$; without outliers: $r=.15$, $p=.109$, $BF=.73$).
+We find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.0$, $p<.001$, $r=-.44$, $BF>100$). These estimates were correlated between the two tasks ($r_{\tau}=.18$, $p=.002$, $BF=13$).
 
 ### Temperature $\tau$
-In contrast to the reduction of exploration in the conceptual task, we find an increase in random exploration ($Z=6.9$, $p<.001$, $r=-.61$, $BF>100$; without outliers: $t(105)=6.9$, $p<.001$, $d=0.8$, $BF>100$). Temperature estimates were strongly rank correlated ($r_{\tau}=.43$, $p<.001$, $BF>100$; without outliers $r=.30$, $p=.002$, $BF=23$).
+In contrast to the reduction of exploration in the conceptual task, we find an increase in random exploration ($Z=6.9$, $p<.001$, $r=-.61$, $BF>100$). Temperature estimates were strongly rank correlated ($r_{\tau}=.43$, $p<.001$, $BF>100$).
 
 
-#### Full data
+#### Statistics
 
 |                           	| Rank-test 	| Rank Correlation 	|
 |---------------------------	|-----------	|-------------	|
@@ -433,42 +465,24 @@ In contrast to the reduction of exploration in the conceptual task, we find an i
 | Temperature $\tau$        	|$Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$|$r_{\tau}=.43$, $p<.001$, $BF>100$|
 
 
-#### Outliers Removed
-
-|                           	| $t$-test 	| Correlation 	|
-|---------------------------	|-----------	|-------------	|
-| Generalization $\lambda$  	|$t(104)=-3.8$, $p<.001$, $d=0.4$, $BF=75$|$r=.30$, $p=.002$, $BF=22$|
-| Exploration Bonus $\beta$ 	|$t(116)=-6.6$, $p<.001$, $d=0.8$, $BF>100$|$r=.15$, $p=.109$, $BF=.73$|
-| Temperature $\tau$        	|$t(105)=6.9$, $p<.001$, $d=0.8$, $BF>100$|$r=.30$, $p=.002$, $BF=23$|
-
-
 
 Here is all the code for these statistical tests below
 
 ```{r eval = FALSE}
+
 #Lambda 
-#Full data
 ranktestPretty(corDF$Conceptuallambda,corDF$Spatiallambda, paired=T)  #rank test
 corTestPretty(corDF$Conceptuallambda,corDF$Spatiallambda, method ='kendall') #correlation
-#Outliers removed
-ttestPretty(subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda,  paired=T) 
-corTestPretty(subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(corDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda)
 
 #Beta
-#Full Data
 ranktestPretty(corDF$Conceptualbeta,corDF$Spatialbeta, paired=T) #Note, sometimes the gibbs sampler doesn't converge for the Bayes Factor
 corTestPretty(corDF$Conceptualbeta,corDF$Spatialbeta, method='kendall')
-#Outliers removed
-ttestPretty(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
-corTestPretty(subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(corDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
+
 
 #Tau
-#Full data
 ranktestPretty(corDF$Conceptualtau,corDF$Spatialtau, paired=T) #full data
 corTestPretty(corDF$Conceptualtau,corDF$Spatialtau, method='kendall')
-#outliers removed
-ttestPretty(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
-corTestPretty(subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(corDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
+
 ```
 
 Were there also differences in parameters between environments? There were no reliable differences for $\lambda$ (conceptual: $U=1864$, $p=.343$, $r_{\tau}=-.07$, $BF=.32$; spatial: $U=2533$, $p=.027$, $r_{\tau}=.16$, $BF=.63$)). There seems to be larger conceptual $\beta$ values in smooth than rough environments ($U=2710$, $p=.002$, $r_{\tau}=.22$, $BF=8.2$), but no differences in spatial $\beta$ ($U=2379$, $p=.138$, $r_{\tau}=.11$, $BF=.58$). There were no differences in $\tau$ (conceptual: $U=1729$, $p=.113$, $r_{\tau}=-.12$, $BF=.50$); spatial: $U=1968$, $p=.648$, $r_{\tau}=-.03$, $BF=.23$).
@@ -525,7 +539,7 @@ explorationSpatial
 
 ### Relationships between parameters and performance
 
-Higher lambda estimates were weakly correlated with better performance in the spatial task ($r_{\tau}=.13$, $p=.030$, $BF=1.2$; outliers removed: $r=-.05$, $p=.600$, $BF=.25$), yet surprisingly lower performance in the conceptual task ($r_{\tau}=-.22$, $p<.001$, $BF>100$; outliers removed: $r=.23$, $p=.012$, $BF=4.3$).
+Higher lambda estimates were weakly correlated with better performance in the spatial task ($r_{\tau}=.13$, $p=.030$, $BF=1.2$), yet surprisingly lower performance in the conceptual task ($r_{\tau}=-.22$, $p<.001$, $BF>100$).
 
 ```{r}
 gpDF <- ddply(subset(paramEstimates, kernel=='RBF') , ~participant+environment+context+meanScore, plyr::summarize, lambda = mean(lambda), beta = mean(beta), tau = mean(tau))
@@ -544,16 +558,12 @@ pLambda <- ggplot(gpDF, aes(x= meanScore, y = lambda, color=context))+
 pLambda 
 #tests
 # corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$lambda, method = 'kendall') #rank
-# corTestPretty(subset(gpDF, context == 'Conceptual' & lambda <= upperLimitLambda)$meanScore, subset(gpDF, context == 'Conceptual' & lambda <= upperLimitLambda)$lambda) #outiers removed
 # #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$lambda,  method = 'kendall')
-# corTestPretty(subset(gpDF, context == 'Spatial' & lambda <= upperLimitLambda)$meanScore, subset(gpDF, context == 'Spatial' & lambda <= upperLimitLambda)$lambda)
-# ttestPretty(subset(gpDF, context=='Conceptual' & environment=='Smooth' & lambda <= upperLimitLambda)$lambda, mu=4, maxBF=Inf)
 # ttestPretty(subset(gpDF, context=='Spatial' & environment=='Smooth')$lambda, mu=4,maxBF=Inf)
-# ttestPretty(subset(gpDF, context=='Conceptual' & environment=='Rough' & lambda <= upperLimitLambda)$lambda, mu=2, maxBF=Inf)
 # ttestPretty(subset(gpDF, context=='Spatial' & environment=='Rough')$lambda, mu=2,maxBF=Inf)
 ```
 
-Higher beta estimates were strongly predictive of better performance in both conceptual ($r_{\tau}=.32$, $p<.001$, $BF>100$; outliers removed: $r=.43$, $p<.001$, $BF>100$) anbd spatial tasks ($r_{\tau}=.31$, $p<.001$, $BF>100$; outliers removed: $r=.48$, $p<.001$, $BF>100$)
+Higher beta estimates were strongly predictive of better performance in both conceptual ($r_{\tau}=.32$, $p<.001$, $BF>100$) anbd spatial tasks ($r_{\tau}=.31$, $p<.001$, $BF>100$)
 ```{r}
 pBeta<- ggplot(gpDF, aes(x= meanScore, y = beta, color=context))+
   geom_point(alpha = .9)+
@@ -569,11 +579,10 @@ pBeta<- ggplot(gpDF, aes(x= meanScore, y = beta, color=context))+
 pBeta 
   
 #corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$beta, method = 'kendall')
-# corTestPretty(subset(gpDF, context == 'Conceptual' & beta <= upperLimitBeta)$meanScore, subset(gpDF, context == 'Conceptual' & beta <= upperLimitBeta)$beta) #outiers removed
-# #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$beta,  method = 'kendall')
-# corTestPretty(subset(gpDF, context == 'Spatial' & beta <= upperLimitBeta)$meanScore, subset(gpDF, context == 'Spatial' & beta <= upperLimitBeta)$beta) #outiers removed
+#corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$beta,  method = 'kendall')
+
 ```
-On the otherhand, high Tau values predicted lower performance in both conceptual($r_{\tau}=-.59$, $p<.001$, $BF>100$; outliers removed: $r=-.68$, $p<.001$, $BF>100$) and spatial tasks ($r_{\tau}=-.58$, $p<.001$, $BF>100$; outliers removed: $r=-.78$, $p<.001$, $BF>100$).
+On the otherhand, high Tau values predicted lower performance in both conceptual($r_{\tau}=-.59$, $p<.001$, $BF>100$) and spatial tasks ($r_{\tau}=-.58$, $p<.001$, $BF>100$).
 ```{r}
 pTau <- ggplot(gpDF, aes(x= meanScore, y = tau, color=context))+
   geom_point(alpha = .9)+
@@ -588,17 +597,24 @@ pTau <- ggplot(gpDF, aes(x= meanScore, y = tau, color=context))+
   theme(strip.background=element_blank(), legend.position='none')
 pTau 
 # #corTestPretty(subset(gpDF, context == 'Conceptual')$meanScore, subset(gpDF, context == 'Conceptual')$tau, method = 'kendall')
-# corTestPretty(subset(gpDF, context == 'Conceptual' & tau <= upperLimitTau)$meanScore, subset(gpDF, context == 'Conceptual' & tau <= upperLimitTau)$tau) #outiers removed
 # #corTestPretty(subset(gpDF, context == 'Spatial')$meanScore, subset(gpDF, context == 'Spatial')$tau,  method = 'kendall')
-# corTestPretty(subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$meanScore, subset(gpDF, context == 'Spatial' & tau <= upperLimitTau)$tau) #outiers removed
 ```
 
 ### Relationships between parameters and predictive accuracy
+
+We can also run a Bayesian mixed effects regression where we try to predict $\log(\tau)$ using context, while also controlling for the predictive acuracy of the model ($R^2$). Here, we still find a difference in tau
 ```{r}
-gpDF <- ddply(subset(paramEstimates, kernel=='RBF') , ~participant+environment+context+meanScore+R2, plyr::summarize, lambda = mean(lambda), beta = mean(beta), tau = mean(tau))
-library('GGally')
-  
-ggpairs(gpDF[,c('tau', 'R2', 'meanScore', 'context')], mapping = aes(color = context))
+# Bayesian regression for predicting tau based on context, while also controlling for predictive accuracy of the model --------
+prior <- c(set_prior("normal(0,1)", class = "b"),set_prior("normal(0,1)", class = "sd"))
+brm_tau_R2 <- run_model(brm(log(tau) ~ 0 + intercept + context * R2 + (1+ context * R2|participant ), data=subset(modelFit, ModelName == "RBF-UCB"), 
+                            prior = prior, cores=4,  iter = 4000, warmup = 1000, control = list(adapt_delta = 0.99)), modelName = 'tauR2')
+                                                    
+
+p_conditionalTemperature <- plot(marginal_effects(brm_tau_R2, effects = "context",  method = "fitted"))$context +
+  theme_classic() +
+  xlab('Task')+
+  ylab(expression(log(tau))) 
+
 ```
 
 
@@ -701,16 +717,16 @@ We also see pretty similar results for the BMT.
 
 
 ### Error Variance $\sigma_\epsilon ^2$
-There were lower estimates of the error variance ($\sigma_\epsilon ^2$) in the conceptual task (Wilcoxon signed-rank test: $Z=-4.8$, $p<.001$, $r=-.42$, $BF>100$; with outliers removed: $t(119)=-5.5$, $p<.001$, $d=0.6$, $BF>100$), suggesting participants were more sensitive to the reward values (i.e., more substantial updates to their means estimates). Error variance was also weakly (`$r_{\tau}=.18$, $p=.003$, $BF=10$; without outliers: $r=.28$, $p=.002$, $BF=21$).
+There were lower estimates of the error variance ($\sigma_\epsilon ^2$) in the conceptual task (Wilcoxon signed-rank test: $Z=-4.8$, $p<.001$, $r=-.42$, $BF>100$), suggesting participants were more sensitive to the reward values (i.e., more substantial updates to their means estimates). Error variance was also weakly correlated (`$r_{\tau}=.18$, $p=.003$, $BF=10$).
 
 ### Exploration bonus $\beta$
-Again, we find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.9$, $p<.001$, $r=-.52$, $BF>100$; without outliers: $t(119)=-7.9$, $p<.001$, $d=1.0$, $BF>100$). It seems unlikely that these estimates are correlated between the two tasks, with ambiguous evidence from our statistical tests ($r_{\tau}=.16$, $p=.006$, $BF=4.8$; without outliers:$r=.14$, $p=.141$, $BF=.59$).
+Again, we find strong differences in exploration behavior, with far lower estimates of the exploration bonus in the conceptual task ($Z=-5.9$, $p<.001$, $r=-.52$, $BF>100$), with somewhat correlated estimates ($r_{\tau}=.16$, $p=.006$, $BF=4.8$).
 
 ### Temperature $\tau$
-And in line with the GP results above, we again find an increase in random exploration in the conceptual taskl ($Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$; without outliers: $t(108)=7.6$, $p<.001$, $d=0.8$, $BF>100$). Once more, temperatre estimates were strongly correlated ($r_{\tau}=.34$, $p<.001$, $BF>100$; without outliers $r=.33$, $p<.001$, $BF=70$).
+And in line with the GP results above, we again find an increase in random exploration in the conceptual taskl ($Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$). Once more, temperatre estimates were strongly correlated ($r_{\tau}=.34$, $p<.001$, $BF>100$).
 
 
-#### Full data
+#### Statistics
 
 |                           	| Rank-test 	| Rank Correlation 	|
 |---------------------------	|-----------	|-------------	|
@@ -719,40 +735,21 @@ And in line with the GP results above, we again find an increase in random explo
 | Temperature $\tau$        	|$Z=-6.9$, $p<.001$, $r=-.61$, $BF>100$|$r_{\tau}=.34$, $p<.001$, $BF>100$ |
 
 
-#### Outliers Removed
-
-|                           	| $t$-test 	| Correlation 	|
-|---------------------------	|-----------	|-------------	|
-| Error Variance $\sigma_\epsilon ^2$	|$t(119)=-5.5$, $p<.001$, $d=0.6$, $BF>100$|$r=.28$, $p=.002$, $BF=21$|
-| Exploration Bonus $\beta$ 	|$t(119)=-7.9$, $p<.001$, $d=1.0$, $BF>100$ |$r=.14$, $p=.141$, $BF=.59$ |
-| Temperature $\tau$        	|$t(108)=7.6$, $p<.001$, $d=0.8$, $BF>100$ |$r=.33$, $p<.001$, $BF=70$ |
-
 
 Code for statistical tests below
 ```{r eval=FALSE}
 #Error Variance 
-#Full data
 ranktestPretty(bmtDF$ConceptualSigma,bmtDF$SpatialSigma, paired=T)  #rank test
 corTestPretty(bmtDF$ConceptualSigma,bmtDF$SpatialSigma, method ='kendall') #correlation
-#Outliers removed
-ttestPretty(subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$ConceptualSigma,subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$SpatialSigma,  paired=T) 
-corTestPretty(subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$ConceptualSigma,subset(bmtDF, ConceptualSigma<=upperLimitSigma & SpatialSigma<=upperLimitSigma)$SpatialSigma)
 
 #Beta
-#Full Data
 ranktestPretty(bmtDF$Conceptualbeta,bmtDF$Spatialbeta, paired=T) 
 corTestPretty(bmtDF$Conceptualbeta,bmtDF$Spatialbeta, method='kendall')
-#Outliers removed
-ttestPretty(subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
-corTestPretty(subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(bmtDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
 
 #Tau
-#Full data
 ranktestPretty(bmtDF$Conceptualtau,bmtDF$Spatialtau, paired=T) #full data
 corTestPretty(bmtDF$Conceptualtau,bmtDF$Spatialtau, method='kendall')
-#outliers removed
-ttestPretty(subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
-corTestPretty(subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(bmtDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
+
 ```
 
 ## GP with Shepard Kernel
@@ -928,20 +925,20 @@ shepardParamPlots
 ```
 
 ### Generalization $\lambda$
-Again we find mixed evidence for differences in generalization between tasks ($Z=-1.8$, $p=.039$, $r=-.15$, $BF=.32$; outliers removed: $t(98)=-2.8$, $p=.007$, $d=0.4$, $BF=4.1$). There is also marginal evidence of correlated estimates ($r_{\tau}=.13$, $p=.026$, $BF=1.3$; outliers removed: $r=.21$, $p=.033$, $BF=2.0$).
+Again we find no evidence of differences in generalization between tasks ($Z=-1.8$, $p=.039$, $r=-.15$, $BF=.32$), with weakly correlated estimates between tasks ($r_{\tau}=.13$, $p=.026$, $BF=1.3$).
 
 ### Minkowski order $\rho$
-There is anecdotal evidence of lower $\rho$ estimates in the conceptual task ($Z=-2.5$, $p=.006$, $r=-.22$, $BF=2.0$ ; outliers removed: $t(128)=-2.7$, $p=.008$, $d=0.3$, $BF=3.3$). The implication of a lower $\rho$ in the conceptual domain is that the Gabor features were treated more independently, whreas the spatial dimensions were more integrated. However, the statistics don't suggest this to be a very robust effect. These estimates are also not correlated ($r_{\tau}=-.02$, $p=.684$, $BF=.12$; outliers removed: $r=-.04$, $p=.653$, $BF=.22$). They actually seem pretty random.
+There is anecdotal evidence of lower $\rho$ estimates in the conceptual task ($Z=-2.5$, $p=.006$, $r=-.22$, $BF=2.0$). The implication of a lower $\rho$ in the conceptual domain is that the Gabor features were treated more independently, whereas the spatial dimensions were more integrated. However, the statistics don't suggest this to be a very robust effect. These estimates are also not correlated ($r_{\tau}=-.02$, $p=.684$, $BF=.12$). They actually seem pretty random.
 
 ### Exploration bonus $\beta$
-Consistent with all the other models, we find systematically lower exploration bonuses in the conceptual task ($Z=-5.5$, $p<.001$, $r=-.49$, $BF>100$; outliers removed: $t(121)=-6.6$, $p<.001$, $d=0.8$, $BF>100$). There is ambiguous evidence of a correlation across tasks ($r_{\tau}=.14$, $p=.021$, $BF=1.6$; outliers removed: r=.09$, $p=.338$, $BF=.32$).
+Consistent with all the other models, we find systematically lower exploration bonuses in the conceptual task ($Z=-5.5$, $p<.001$, $r=-.49$, $BF>100$). There is weak evidence of a correlation across tasks ($r_{\tau}=.14$, $p=.021$, $BF=1.6$).
 
 ### Temperature $\tau$
-And like all other models, we find clear evidence of higher temperatures in the conceptual task ($Z=-6.3$, $p<.001$, $r=-.56$, $BF>100$; outliers removed: $t(105)=6.5$, $p<.001$, $d=0.7$, $BF>100$), with strong correlations across tasks ($r_{\tau}=.41$, $p<.001$, $BF>100$; $r=.32$, $p<.001$, $BF=45$ )
+And like all other models, we find clear evidence of higher temperatures in the conceptual task ($Z=-6.3$, $p<.001$, $r=-.56$, $BF>100$), with strong correlations across tasks ($r_{\tau}=.41$, $p<.001$, $BF>100$)
 
 
 
-#### Full data
+#### Statistics
 
 |                           	| Rank-test 	| Rank Correlation 	|
 |---------------------------	|-----------	|-------------	|
@@ -951,59 +948,33 @@ And like all other models, we find clear evidence of higher temperatures in the 
 | Temperature $\tau$        	|$Z=-6.3$, $p<.001$, $r=-.56$, $BF>100$ |$r_{\tau}=.41$, $p<.001$, $BF>100$ |
 
 
-#### Outliers Removed
-
-|                           	| $t$-test 	| Correlation 	|
-|---------------------------	|-----------	|-------------	|
-| Generalization $\lambda$  	|$t(98)=-2.8$, $p=.007$, $d=0.4$, $BF=4.1$ |$r=.21$, $p=.033$, $BF=2.0$ |
-|  Minkowski order $\rho$ 	  |$t(128)=-2.7$, $p=.008$, $d=0.3$, $BF=3.3$ |$r=-.04$, $p=.653$, $BF=.22$ |
-| Exploration Bonus $\beta$ 	|$t(121)=-6.6$, $p<.001$, $d=0.8$, $BF>100$ |$r=.09$, $p=.338$, $BF=.32$ |
-| Temperature $\tau$        	|$t(105)=6.5$, $p<.001$, $d=0.7$, $BF>100$ |$r=.32$, $p<.001$, $BF=45$ |
-
-
-
 Here is all the code for these statistical tests below
 
 ```{r eval = FALSE}
 #Lambda 
-#Full data
 ranktestPretty(shepardDF$Conceptuallambda,shepardDF$Spatiallambda, paired=T)  #rank test
 corTestPretty(shepardDF$Conceptuallambda,shepardDF$Spatiallambda, method ='kendall') #correlation
-#Outliers removed
-ttestPretty(subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda,  paired=T) 
-corTestPretty(subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Conceptuallambda,subset(shepardDF, Conceptuallambda<=upperLimitLambda & Spatiallambda<=upperLimitLambda)$Spatiallambda)
 
 
 #Rho
-#Full Data
 ranktestPretty(shepardDF$Conceptualp,shepardDF$Spatialp, paired=T) #Note, sometimes the gibbs sampler doesn't converge for the Bayes Factor
 corTestPretty(shepardDF$Conceptualp,shepardDF$Spatialp, method='kendall')
-#Outliers removed
-ttestPretty(subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Conceptualp,subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Spatialp,  paired=T) 
-corTestPretty(subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Conceptualp,subset(shepardDF, Conceptualp<=upperLimitp & Spatialp<=upperLimitp)$Spatialp)
 
 #Beta
-#Full Data
 ranktestPretty(shepardDF$Conceptualbeta,shepardDF$Spatialbeta, paired=T) 
 corTestPretty(shepardDF$Conceptualbeta,shepardDF$Spatialbeta, method='kendall')
-#Outliers removed
-ttestPretty(subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta,  paired=T) 
-corTestPretty(subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Conceptualbeta,subset(shepardDF, Conceptualbeta<=upperLimitBeta & Spatialbeta<=upperLimitBeta)$Spatialbeta)
 
 #Tau
-#Full data
 ranktestPretty(shepardDF$Conceptualtau,shepardDF$Spatialtau, paired=T) #full data
 corTestPretty(shepardDF$Conceptualtau,shepardDF$Spatialtau, method='kendall')
-#outliers removed
-ttestPretty(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau,  paired=T) 
-corTestPretty(subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Conceptualtau,subset(shepardDF, Conceptualtau<=upperLimitTau & Spatialtau<=upperLimitTau)$Spatialtau)
 ```
 
 # Save plots
 ## Main plot
 ```{r fig.height = 10, fig.width = 10}
 TopRow <- cowplot::plot_grid(p1,p2, nrow =1, labels = 'auto')
-pModel <- cowplot::plot_grid(TopRow, p3, GPparameterPlots, ncol=1, labels = c("", "c", "d"))
+midRow <- cowplot::plot_grid(p3,pSimBars, rel_widths = c(3,2), nrow =1, labels = c("c", "d"))  
+pModel <- cowplot::plot_grid(TopRow, midRow, GPparameterPlots, ncol=1, labels = c("", "", "e"))
 pModel
 ggsave('../plots/ModelResults.pdf',pModel, width = 9, height = 8, unit='in', useDingbats=F)
 ```
