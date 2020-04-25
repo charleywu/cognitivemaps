@@ -1,6 +1,6 @@
 # Cognitive maps in spatial and non-spatial domains: Similar but different
 
-This git repo contains the data, code, and analyses used in Wu, Schulz, Garvert, Meder & Schuck (2020).
+This git repo contains the data, code, and analyses used in [Wu, Schulz, Garvert, Meder & Schuck (2020)](https://www.biorxiv.org/content/10.1101/2020.01.21.914556v1.full.pdf+html).
 
 All analyses were run with R version 3.6.1, with the exception of the Bayesian hierarchical model comparison results (pxp) that used Matlab R2019b.
 
