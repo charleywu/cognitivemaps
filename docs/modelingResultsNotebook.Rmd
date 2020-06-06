@@ -17,7 +17,7 @@ Now let's model the data.
 rm(list=ls())
 
 #load packages
-packages <- c("coin", 'ggbeeswarm', 'brms', 'sjPlot', 'lsr','cowplot', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'coefplot', "grid", 'corrplot', 'ggsignif')
+packages <- c("coin", 'ggbeeswarm', 'brms', 'sjPlot', 'lsr','cowplot', 'sjstats', 'WRS2', 'BayesFactor', 'readr', 'plyr', 'jsonlite', 'ggplot2', 'scales', "ggExtra", 'coefplot', "grid", 'corrplot', 'ggsignif')
 invisible(lapply(packages, require, character.only = TRUE))
 theme_set(theme_cowplot(font_size=12))
 
@@ -536,6 +536,34 @@ explorationSpatial <- ggplot(subset(corDF, Spatialbeta<=upperLimit & Spatialtau<
 explorationSpatial
 
 ```
+
+
+### Task order and differences in exploration
+Let's see if the difference in directed exploration ($\beta$) and undirected exploration ($\tau$) were influenced by task order: 
+
+```{r}
+taskOrderDiff <- ddply(corDF, ~participant+environment+contextOrder, plyr::summarize, betaDiff = Spatialbeta - Conceptualbeta , tauDiff = Spatialtau-  Conceptualtau)
+
+#ANOVA of Beta Differences
+res.aov <- aov(betaDiff ~ environment*contextOrder, data=taskOrderDiff)
+anova_stats(res.aov)
+# Now let's replicate via Robust ANOVA
+bwtrim(betaDiff ~  environment*contextOrder, id = participant, data=taskOrderDiff, tr = 0.2) #using 20% trimmed means
+#Now compute Bayes factor
+bf = anovaBF(betaDiff ~  environment*contextOrder,  data=taskOrderDiff)
+bf
+
+#ANOVA of Tau Differences
+res.aov <- aov(tauDiff ~ environment*contextOrder, data=taskOrderDiff)
+anova_stats(res.aov)
+# Now let's replicate via Robust ANOVA
+bwtrim(tauDiff ~  environment*contextOrder, id = participant, data=taskOrderDiff, tr = 0.2) #using 20% trimmed means
+#Now compute Bayes factor
+bf = anovaBF(tauDiff ~  environment*contextOrder,  data=taskOrderDiff)
+bf
+
+```
+These analyses show that context-related changes in $\beta$ and $\tau$ were not influenced by either environment or task order ($p>0.05$, $BF<1$).
 
 ### Relationships between parameters and performance
 
