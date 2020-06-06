@@ -1,6 +1,6 @@
 # Cognitive maps in spatial and non-spatial domains: Similar but different
 
-This git repo contains the data, code, and analyses used in Wu, Schulz, Garvert, Meder & Schuck (2020).
+This git repo contains the data, code, and analyses used in [Wu, Schulz, Garvert, Meder & Schuck (2020)](https://www.biorxiv.org/content/10.1101/2020.01.21.914556v1.full.pdf+html).
 
 All analyses were run with R version 3.6.1, with the exception of the Bayesian hierarchical model comparison results (pxp) that used Matlab R2019b.
 
@@ -23,7 +23,7 @@ All analyses were run with R version 3.6.1, with the exception of the Bayesian h
 ## Models, Simulations, Regressions, and Plots
 - The computational model results are contained in `modelResults`. `modelResults/modelFit.csv` and `modelResults/paramEstimates.csv` contain the cross-validated modeling results (produced using `modelComparisonCV.R` and aggregated via `modelplots.R`). For additional details see the [model results notebook](https://charleywu.github.io/cognitivemaps/modelingResultsNotebook.html) and the [bonus round notebook](https://charleywu.github.io/cognitivemaps/bonusRoundNotebook.html)
 - Model simulations are stored in `rationalModels/`, while the parameters used to generate these simulations are contained in `rationalModels/parameters`
-- Bayesian regression models are stored in `brmsModels`. Because these files can sometimes be larger than the github filesize limit, any file `*.brm` s tracked via git-lfs (see https://git-lfs.github.com/ for details)
+- Bayesian regression models are stored in `brmsModels`. Because these files can sometimes be larger than the github filesize limit, any file that ends in `*.brm` is tracked via git-lfs (see https://git-lfs.github.com/ for details)
 - plots are all stored in `plots`, with some additional plots only presented in the notebooks 
    
 There are also some helper files that are loaded in these notebooks or are explicitly mentioned (e.g., `modelComparisonCV.R` is used to generate the model estimates).
